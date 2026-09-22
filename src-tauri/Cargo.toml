@@ -25,8 +25,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 walkdir = "2.5.0"
 dirs = "7.0.0"
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled", "functions"] }
 notify = "6"
+regex = "1"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

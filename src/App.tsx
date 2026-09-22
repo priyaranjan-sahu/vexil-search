@@ -47,6 +47,8 @@ function App() {
   const [indexingProgress, setIndexingProgress] = useState<number | null>(null);
 
   const [activeCategory, setActiveCategory] = useState<string>("All");
+  const [activeSizeFilter, setActiveSizeFilter] = useState<string>("Any Size");
+  const [activeDateFilter, setActiveDateFilter] = useState<string>("Any Time");
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
 
   // Ava Find Features (Renamed to avoid copy)
@@ -71,6 +73,7 @@ function App() {
   // Track shortcut registration to avoid double-registration in StrictMode
   const shortcutRegisteredRef = useRef(false);
   const currentShortcutRef = useRef(shortcut);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     // Theme Engine
@@ -398,6 +401,7 @@ function App() {
       <div className="toolbar">
         <form className="search-wrapper" onSubmit={handleSearch}>
           <svg
+            className="search-icon"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
@@ -407,171 +411,167 @@ function App() {
             <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
           </svg>
           <input
+            ref={searchInputRef}
             type="text"
-            placeholder="Search documents, folders, files..."
+            className="search-input"
+            placeholder="Search documents, apps, files..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            autoFocus
           />
         </form>
 
-        <div className="toolbar-divider"></div>
+        <div className="toolbar-actions">
+          <div className="toolbar-filters">
+            <button
+              className={`filter-btn ${activeCategory === "All" ? "active" : ""}`}
+              onClick={() => setActiveCategory("All")}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+              </svg>
+              Show All
+            </button>
+            <button
+              className={`filter-btn ${activeCategory === "Music" ? "active" : ""}`}
+              onClick={() => setActiveCategory("Music")}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <path d="M9 18V5l12-2v13"></path>
+                <circle cx="6" cy="18" r="3"></circle>
+                <circle cx="18" cy="16" r="3"></circle>
+              </svg>
+              Music
+            </button>
+            <button
+              className={`filter-btn ${activeCategory === "Videos" ? "active" : ""}`}
+              onClick={() => setActiveCategory("Videos")}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <rect
+                  x="2"
+                  y="2"
+                  width="20"
+                  height="20"
+                  rx="2.18"
+                  ry="2.18"
+                ></rect>
+                <line x1="7" y1="2" x2="7" y2="22"></line>
+                <line x1="17" y1="2" x2="17" y2="22"></line>
+                <line x1="2" y1="12" x2="22" y2="12"></line>
+                <line x1="2" y1="7" x2="7" y2="7"></line>
+                <line x1="2" y1="17" x2="7" y2="17"></line>
+                <line x1="17" y1="17" x2="22" y2="17"></line>
+                <line x1="17" y1="7" x2="22" y2="7"></line>
+              </svg>
+              Videos
+            </button>
+            <button
+              className={`filter-btn ${activeCategory === "Programs" ? "active" : ""}`}
+              onClick={() => setActiveCategory("Programs")}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+                <line x1="8" y1="21" x2="16" y2="21"></line>
+                <line x1="12" y1="17" x2="12" y2="21"></line>
+              </svg>
+              Programs
+            </button>
+            <div className="filter-divider"></div>
+            <select
+              className="advanced-filter-select"
+              value={activeSizeFilter}
+              onChange={(e) => setActiveSizeFilter(e.target.value)}
+            >
+              <option value="Any Size">Any Size</option>
+              <option value="Small (< 1MB)">Small (&lt; 1MB)</option>
+              <option value="Medium (1-100MB)">Medium (1-100MB)</option>
+              <option value="Large (> 100MB)">Large (&gt; 100MB)</option>
+            </select>
+            <select
+              className="advanced-filter-select"
+              value={activeDateFilter}
+              onChange={(e) => setActiveDateFilter(e.target.value)}
+            >
+              <option value="Any Time">Any Time</option>
+              <option value="Today">Today</option>
+              <option value="This Week">This Week</option>
+              <option value="This Month">This Month</option>
+            </select>
+          </div>
 
-        <div className="toolbar-tabs">
-          <div
-            className={`toolbar-tab ${activeCategory === "Music" ? "active" : ""}`}
-            onClick={() => setActiveCategory("Music")}
-          >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-            >
-              <path d="M9 18V5l12-2v13"></path>
-              <circle cx="6" cy="18" r="3"></circle>
-              <circle cx="18" cy="16" r="3"></circle>
-            </svg>
-            Music
-          </div>
-          <div
-            className={`toolbar-tab ${activeCategory === "Videos" ? "active" : ""}`}
-            onClick={() => setActiveCategory("Videos")}
-          >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-            >
-              <rect
-                x="2"
-                y="2"
-                width="20"
-                height="20"
-                rx="2.18"
-                ry="2.18"
-              ></rect>
-              <line x1="7" y1="2" x2="7" y2="22"></line>
-              <line x1="17" y1="2" x2="17" y2="22"></line>
-              <line x1="2" y1="12" x2="22" y2="12"></line>
-              <line x1="2" y1="7" x2="7" y2="7"></line>
-              <line x1="2" y1="17" x2="7" y2="17"></line>
-              <line x1="17" y1="17" x2="22" y2="17"></line>
-              <line x1="17" y1="7" x2="22" y2="7"></line>
-            </svg>
-            Videos
-          </div>
-          <div
-            className={`toolbar-tab ${activeCategory === "Programs" ? "active" : ""}`}
-            onClick={() => setActiveCategory("Programs")}
-          >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-            >
-              <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
-              <line x1="8" y1="21" x2="16" y2="21"></line>
-              <line x1="12" y1="17" x2="12" y2="21"></line>
-            </svg>
-            Programs
-          </div>
-          <div
-            className={`toolbar-tab ${activeCategory === "Downloads" ? "active" : ""}`}
-            onClick={() => setActiveCategory("Downloads")}
-          >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-            >
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-              <polyline points="7 10 12 15 17 10"></polyline>
-              <line x1="12" y1="15" x2="12" y2="3"></line>
-            </svg>
-            Downloads
-          </div>
-          <div
-            className={`toolbar-tab ${activeCategory === "All" ? "active" : ""}`}
-            onClick={() => setActiveCategory("All")}
-          >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-            >
-              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
-            </svg>
-            Show All
-          </div>
-        </div>
+          <div className="toolbar-divider" style={{ marginLeft: "auto" }}></div>
 
-        <div className="toolbar-divider" style={{ marginLeft: "auto" }}></div>
-
-        <div className="toolbar-group">
-          <button
-            className="tool-btn"
-            disabled={!selectedResult}
-            onClick={() => selectedResult && openResult(selectedResult.path)}
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
+          <div className="toolbar-group">
+            <button
+              className="tool-btn"
+              disabled={!selectedResult}
+              onClick={() => selectedResult && openResult(selectedResult.path)}
             >
-              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
-              <polyline points="15 3 21 3 21 9"></polyline>
-              <line x1="10" y1="14" x2="21" y2="3"></line>
-            </svg>
-            Open
-          </button>
-          <button
-            className="tool-btn"
-            disabled={!selectedResult}
-            onClick={handleCopyPath}
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                <polyline points="15 3 21 3 21 9"></polyline>
+                <line x1="10" y1="14" x2="21" y2="3"></line>
+              </svg>
+              Open
+            </button>
+            <button
+              className="tool-btn"
+              disabled={!selectedResult}
+              onClick={handleCopyPath}
             >
-              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-            </svg>
-            Copy Path
-          </button>
-          <button
-            className="tool-btn"
-            disabled={!selectedResult}
-            onClick={handleDelete}
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+              Copy Path
+            </button>
+            <button
+              className="tool-btn"
+              disabled={!selectedResult}
+              onClick={handleDelete}
             >
-              <polyline points="3 6 5 6 21 6"></polyline>
-              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-            </svg>
-            Delete
-          </button>
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <polyline points="3 6 5 6 21 6"></polyline>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+              </svg>
+              Delete
+            </button>
+          </div>
         </div>
       </div>
 

@@ -31,6 +31,15 @@ fn open_db(path: &PathBuf) -> SqlResult<Connection> {
     // WAL mode allows the indexer and searches to work concurrently
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
+    
+    // Register regex function
+    conn.create_scalar_function("REGEXP", 2, rusqlite::functions::FunctionFlags::SQLITE_UTF8 | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC, move |ctx| {
+        let expr = ctx.get::<String>(0)?;
+        let s = ctx.get::<String>(1)?;
+        let re = regex::Regex::new(&expr).map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
+        Ok(re.is_match(&s))
+    })?;
+
     Ok(conn)
 }
 
@@ -189,47 +198,77 @@ fn search_files(app_handle: AppHandle, query: String) -> Result<Vec<SearchResult
     let state = app_handle.state::<DbConnection>();
     let conn = state.0.lock().map_err(|_| "DB lock failed".to_string())?;
 
-    let sql = "
-        SELECT rowid, title, path,
-               snippet(file_index, 0, '<b>', '</b>', '...', 10),
-               bm25(file_index)
-        FROM file_index
-        WHERE file_index MATCH ?
-        ORDER BY rank
-        LIMIT 20
-    ";
-
-    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-
-    // SQLite FTS syntax for prefix search; quote terms to avoid syntax errors on special characters
-    let terms: Vec<String> = query
-        .split_whitespace()
-        .map(|term| format!("\"{}\"*", term.replace('"', "")))
-        .collect();
-    let fts_query = terms.join(" AND ");
-
-    let results = stmt
-        .query_map(params![fts_query], |row| {
-            // bm25() returns negative scores (more negative = better match);
-            // map to a friendly 1-100 percentage.
-            let bm25: f64 = row.get::<_, f64>(4).unwrap_or(0.0);
-            let relevance = (100.0 / (1.0 + bm25.abs() * 0.5)).clamp(1.0, 100.0) as u8;
-            Ok(SearchResult {
-                id: row.get::<_, u32>(0)?,
-                title: row.get::<_, String>(1)?,
-                path: row.get::<_, String>(2)?,
-                snippet: row
-                    .get::<_, String>(3)
-                    .unwrap_or_else(|_| "File matched".to_string()),
-                relevance,
-            })
-        })
-        .map_err(|e| e.to_string())?;
-
+    let is_regex = query.starts_with('/') && query.ends_with('/') && query.len() > 2;
     let mut final_results = Vec::new();
-    for res in results {
-        if let Ok(r) = res {
-            final_results.push(r);
+
+    if is_regex {
+        let regex_pattern = &query[1..query.len() - 1];
+        let sql = "
+            SELECT rowid, title, path,
+                   'Regex match found in path or title' as snippet,
+                   100 as bm25
+            FROM file_index
+            WHERE path REGEXP ? OR title REGEXP ?
+            LIMIT 50
+        ";
+        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+        let results = stmt
+            .query_map(params![regex_pattern, regex_pattern], |row| {
+                Ok(SearchResult {
+                    id: row.get::<_, u32>(0)?,
+                    title: row.get::<_, String>(1)?,
+                    path: row.get::<_, String>(2)?,
+                    snippet: row.get::<_, String>(3)?,
+                    relevance: 100,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+
+        for res in results {
+            if let Ok(r) = res {
+                final_results.push(r);
+            }
+        }
+    } else {
+        let sql = "
+            SELECT rowid, title, path,
+                   snippet(file_index, 0, '<b>', '</b>', '...', 10),
+                   bm25(file_index)
+            FROM file_index
+            WHERE file_index MATCH ?
+            ORDER BY rank
+            LIMIT 20
+        ";
+
+        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+
+        // SQLite FTS syntax for prefix search; quote terms to avoid syntax errors on special characters
+        let terms: Vec<String> = query
+            .split_whitespace()
+            .map(|term| format!("\"{}\"*", term.replace('"', "")))
+            .collect();
+        let fts_query = terms.join(" AND ");
+
+        let results = stmt
+            .query_map(params![fts_query], |row| {
+                let bm25: f64 = row.get::<_, f64>(4).unwrap_or(0.0);
+                let relevance = (100.0 / (1.0 + bm25.abs() * 0.5)).clamp(1.0, 100.0) as u8;
+                Ok(SearchResult {
+                    id: row.get::<_, u32>(0)?,
+                    title: row.get::<_, String>(1)?,
+                    path: row.get::<_, String>(2)?,
+                    snippet: row
+                        .get::<_, String>(3)
+                        .unwrap_or_else(|_| "File matched".to_string()),
+                    relevance,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+
+        for res in results {
+            if let Ok(r) = res {
+                final_results.push(r);
+            }
         }
     }
 
