@@ -1,16 +1,11 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
-pub struct AllowedRoots {
-    roots: Vec<PathBuf>,
-}
+pub struct AllowedRoots {}
 
 impl AllowedRoots {
     pub fn new() -> Self {
-        let mut roots = Vec::new();
-        if let Some(docs) = dirs::document_dir() { roots.push(docs); }
-        if let Some(dl) = dirs::download_dir() { roots.push(dl); }
-        Self { roots }
+        Self {}
     }
     
     // In our implementation, since the settings are passed dynamically to `start_indexing`,
