@@ -120,6 +120,23 @@ function App() {
     localStorage.setItem("vexil-theme", theme);
   }, [theme]);
 
+  const [customDirs, setCustomDirs] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("vexil-custom-dirs") || "[]");
+    } catch {
+      return [];
+    }
+  });
+  const [tempCustomDir, setTempCustomDir] = useState("");
+
+  useEffect(() => {
+    localStorage.setItem("vexil-custom-dirs", JSON.stringify(customDirs));
+  }, [customDirs]);
+
+  const triggerIndexing = useCallback(() => {
+    invoke("start_indexing", { customDirs });
+  }, [customDirs]);
+
   useEffect(() => {
     // Database Indexing Progress Listeners
     const unlistenProgress = listen<number>("indexing-progress", (event) => {
@@ -135,14 +152,14 @@ function App() {
       setTimeout(() => setRadarToast(null), 4000);
     });
 
-    invoke("start_indexing");
+    triggerIndexing();
 
     return () => {
       unlistenProgress.then((f) => f());
       unlistenDone.then((f) => f());
       unlistenRadar.then((f) => f());
     };
-  }, []);
+  }, [triggerIndexing]);
 
   // 3. Register Global Shortcut
   useEffect(() => {
@@ -879,6 +896,75 @@ function App() {
                 />
                 <button type="submit">Set</button>
               </form>
+            </div>
+
+            <div className="settings-row" style={{ display: "block" }}>
+              <label style={{ display: "block", marginBottom: "8px" }}>
+                Custom Scan Paths
+              </label>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (tempCustomDir && !customDirs.includes(tempCustomDir)) {
+                    setCustomDirs((prev) => [...prev, tempCustomDir]);
+                    setTempCustomDir("");
+                  }
+                }}
+                className="shortcut-form"
+              >
+                <input
+                  type="text"
+                  value={tempCustomDir}
+                  onChange={(e) => setTempCustomDir(e.target.value)}
+                  placeholder="e.g. C:\Projects"
+                />
+                <button type="submit">Add</button>
+              </form>
+              <div
+                style={{
+                  marginTop: "8px",
+                  maxHeight: "100px",
+                  overflowY: "auto",
+                }}
+              >
+                {customDirs.map((dir) => (
+                  <div
+                    key={dir}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      fontSize: "0.8rem",
+                      padding: "4px",
+                      background: "var(--result-hover-bg)",
+                      marginBottom: "4px",
+                      borderRadius: "4px",
+                    }}
+                  >
+                    <span
+                      style={{
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {dir}
+                    </span>
+                    <button
+                      onClick={() =>
+                        setCustomDirs((prev) => prev.filter((d) => d !== dir))
+                      }
+                      style={{
+                        background: "transparent",
+                        border: "none",
+                        color: "var(--text-muted)",
+                        cursor: "pointer",
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
             </div>
 
             <button

@@ -76,10 +76,10 @@ fn is_junk_dir(name: &str) -> bool {
 }
 
 #[tauri::command]
-fn start_indexing(app_handle: AppHandle) -> String {
+fn start_indexing(app_handle: AppHandle, custom_dirs: Option<Vec<String>>) -> Result<String, String> {
     // Skip if an index run is already in progress (also guards React StrictMode double-invoke)
     if INDEXING.load(std::sync::atomic::Ordering::SeqCst) {
-        return "Indexing already in progress".to_string();
+        return Ok("Indexing already in progress".to_string());
     }
     INDEXING.store(true, std::sync::atomic::Ordering::SeqCst);
 
@@ -91,7 +91,7 @@ fn start_indexing(app_handle: AppHandle) -> String {
             Ok(c) => c,
             Err(_) => {
                 INDEXING.store(false, std::sync::atomic::Ordering::SeqCst);
-                return "DB lock failed".to_string();
+                return Err("DB lock failed".to_string());
             }
         };
         match conn.query_row("PRAGMA database_list", [], |row| {
@@ -100,7 +100,7 @@ fn start_indexing(app_handle: AppHandle) -> String {
             Ok(file) => PathBuf::from(file),
             Err(_) => {
                 INDEXING.store(false, std::sync::atomic::Ordering::SeqCst);
-                return "Failed to locate database".to_string();
+                return Err("Failed to locate database".to_string());
             }
         }
     };
@@ -127,6 +127,11 @@ fn start_indexing(app_handle: AppHandle) -> String {
         }
         if let Some(dl_dir) = dirs::download_dir() {
             dirs_to_scan.push(dl_dir);
+        }
+        if let Some(custom) = custom_dirs {
+            for dir in custom {
+                dirs_to_scan.push(PathBuf::from(dir));
+            }
         }
 
         use tauri::Emitter;
@@ -196,7 +201,7 @@ fn start_indexing(app_handle: AppHandle) -> String {
         done(count);
     });
 
-    "Indexing started in the background".to_string()
+    Ok("Indexing started in the background".to_string())
 }
 
 #[tauri::command]
