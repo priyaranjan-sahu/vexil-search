@@ -23,19 +23,22 @@
   color-scheme: dark;
   color: #f8fafc;
 
-  --bg-color: #202020;
-  --surface-color: #282828;
-  --surface-border: #333333;
+  --bg-color: #121212;
+  --surface-color: #1e1e1e;
+  --surface-border: #2a2a2a;
+  --surface-border-light: #2a2a2a;
 
-  --input-bg: #282828;
-  --input-border: #444444;
+  --toolbar-bg: #1e1e1e;
+
+  --input-bg: #262626;
+  --input-border: #333333;
   --input-focus-ring: #0078d4;
 
   --text-primary: #ffffff;
-  --text-secondary: #cccccc;
-  --text-muted: #999999;
+  --text-secondary: #a0a0a0;
+  --text-muted: #707070;
 
-  --result-hover-bg: rgba(255, 255, 255, 0.05);
+  --result-hover-bg: #2d2d2d;
 }
 
 /* Light Theme Variables */
@@ -43,19 +46,22 @@
   color-scheme: light;
   color: #0f172a;
 
-  --bg-color: #f3f3f3;
+  --bg-color: #f8fafc;
   --surface-color: #ffffff;
-  --surface-border: #e5e5e5;
+  --surface-border: #e2e8f0;
+  --surface-border-light: #e2e8f0;
 
-  --input-bg: #ffffff;
-  --input-border: #cccccc;
+  --toolbar-bg: #ffffff;
+
+  --input-bg: #f1f5f9;
+  --input-border: #cbd5e1;
   --input-focus-ring: #0078d4;
 
-  --text-primary: #000000;
-  --text-secondary: #5c5c5c;
-  --text-muted: #767676;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #94a3b8;
 
-  --result-hover-bg: #f9f9f9;
+  --result-hover-bg: #f1f5f9;
 }
 
 /* System Theme Sync */
@@ -64,19 +70,22 @@
     color-scheme: light;
     color: #0f172a;
 
-    --bg-color: #f3f3f3;
+    --bg-color: #f8fafc;
     --surface-color: #ffffff;
-    --surface-border: #e5e5e5;
+    --surface-border: #e2e8f0;
+    --surface-border-light: #e2e8f0;
 
-    --input-bg: #ffffff;
-    --input-border: #cccccc;
+    --toolbar-bg: #ffffff;
+
+    --input-bg: #f1f5f9;
+    --input-border: #cbd5e1;
     --input-focus-ring: #0078d4;
 
-    --text-primary: #000000;
-    --text-secondary: #5c5c5c;
-    --text-muted: #767676;
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+    --text-muted: #94a3b8;
 
-    --result-hover-bg: #f9f9f9;
+    --result-hover-bg: #f1f5f9;
   }
 }
 
@@ -89,8 +98,8 @@ body,
 #root {
   margin: 0;
   padding: 0;
-  height: 100vh;
-  width: 100vw;
+  height: 100%;
+  width: 100%;
   background-color: var(--bg-color);
   color: var(--text-primary);
   overflow: hidden;

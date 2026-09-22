@@ -46,8 +46,18 @@ function App() {
   const [isSearching, setIsSearching] = useState(false);
   const [indexingProgress, setIndexingProgress] = useState<number | null>(null);
 
+  const [activeCategory, setActiveCategory] = useState<string>("All");
+  const [activeMenu, setActiveMenu] = useState<string | null>(null);
+
+  // Ava Find Features (Renamed to avoid copy)
+  const [selectedResult, setSelectedResult] = useState<SearchResult | null>(
+    null,
+  );
+  const [radarToast, setRadarToast] = useState<string | null>(null);
+
   // Settings & Theme
   const [showSettings, setShowSettings] = useState(false);
+  const [showAbout, setShowAbout] = useState(false);
   const [theme, setTheme] = useState<Theme>(
     () => (localStorage.getItem("vexil-theme") as Theme) || "system",
   );
@@ -82,11 +92,17 @@ function App() {
       setIndexingProgress(null);
     });
 
+    const unlistenRadar = listen<string>("live-radar-file", (event) => {
+      setRadarToast(event.payload);
+      setTimeout(() => setRadarToast(null), 4000);
+    });
+
     invoke("start_indexing");
 
     return () => {
       unlistenProgress.then((f) => f());
       unlistenDone.then((f) => f());
+      unlistenRadar.then((f) => f());
     };
   }, []);
 
@@ -161,6 +177,7 @@ function App() {
     try {
       const res: SearchResult[] = await invoke("search_files", { query });
       setResults(res);
+      setSelectedResult(null);
     } catch (error) {
       console.error("Failed to search files:", error);
     } finally {
@@ -176,12 +193,14 @@ function App() {
     return () => clearTimeout(handle);
   }, [searchQuery, runSearch]);
 
-  // Escape clears the query / closes settings
+  // Escape clears the query / closes settings/about
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         if (showSettings) {
           setShowSettings(false);
+        } else if (showAbout) {
+          setShowAbout(false);
         } else {
           setSearchQuery("");
         }
@@ -189,7 +208,7 @@ function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [showSettings]);
+  }, [showSettings, showAbout]);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -212,123 +231,390 @@ function App() {
     }
   };
 
+  const handleDelete = async () => {
+    if (!selectedResult) return;
+    try {
+      await invoke("delete_file", { path: selectedResult.path });
+      setResults((prev) => prev.filter((r) => r.id !== selectedResult.id));
+      setSelectedResult(null);
+    } catch (error) {
+      console.error("Failed to delete file:", error);
+    }
+  };
+
+  const handleCopyPath = () => {
+    if (selectedResult && navigator.clipboard) {
+      navigator.clipboard.writeText(selectedResult.path);
+    }
+  };
+
+  const getFilteredResults = () => {
+    if (activeCategory === "All") return results;
+    return results.filter((r) => {
+      const ext = r.path.split(".").pop()?.toLowerCase() || "";
+      const isPathDownloads = r.path.toLowerCase().includes("downloads");
+      switch (activeCategory) {
+        case "Music":
+          return ["mp3", "wav", "flac", "ogg", "m4a"].includes(ext);
+        case "Videos":
+          return ["mp4", "mkv", "avi", "mov", "webm"].includes(ext);
+        case "Programs":
+          return ["exe", "msi", "bat", "cmd", "app", "sh"].includes(ext);
+        case "Downloads":
+          return isPathDownloads;
+        default:
+          return true;
+      }
+    });
+  };
+
+  const filteredResults = getFilteredResults();
+
   return (
     <div className="container">
-      {/* Header */}
-      <header className="header">
-        <div className="header-top">
-          <div className="logo-container">
+      {/* 1. Menu Bar */}
+      <div className="menu-bar">
+        <div
+          className="menu-item-container"
+          onMouseLeave={() => setActiveMenu(null)}
+        >
+          <div
+            className="menu-item"
+            onMouseEnter={() => setActiveMenu("File")}
+            onClick={() => setActiveMenu("File")}
+          >
+            File
+          </div>
+          {activeMenu === "File" && (
+            <div className="menu-dropdown">
+              <div className="menu-dropdown-item">
+                New Search <span style={{ opacity: 0.5 }}>Ctrl+N</span>
+              </div>
+              <div className="menu-dropdown-divider"></div>
+              <div className="menu-dropdown-item" onClick={() => {}}>
+                Exit
+              </div>
+            </div>
+          )}
+        </div>
+        <div
+          className="menu-item-container"
+          onMouseLeave={() => setActiveMenu(null)}
+        >
+          <div
+            className="menu-item"
+            onMouseEnter={() => setActiveMenu("Edit")}
+            onClick={() => setActiveMenu("Edit")}
+          >
+            Edit
+          </div>
+          {activeMenu === "Edit" && (
+            <div className="menu-dropdown">
+              <div className="menu-dropdown-item">
+                Copy <span style={{ opacity: 0.5 }}>Ctrl+C</span>
+              </div>
+              <div className="menu-dropdown-item">
+                Paste <span style={{ opacity: 0.5 }}>Ctrl+V</span>
+              </div>
+              <div className="menu-dropdown-divider"></div>
+              <div className="menu-dropdown-item">
+                Select All <span style={{ opacity: 0.5 }}>Ctrl+A</span>
+              </div>
+            </div>
+          )}
+        </div>
+        <div
+          className="menu-item-container"
+          onMouseLeave={() => setActiveMenu(null)}
+        >
+          <div
+            className="menu-item"
+            onMouseEnter={() => setActiveMenu("View")}
+            onClick={() => setActiveMenu("View")}
+          >
+            View
+          </div>
+          {activeMenu === "View" && (
+            <div className="menu-dropdown">
+              <div
+                className="menu-dropdown-item"
+                onClick={() => setShowSettings(true)}
+              >
+                Theme Settings
+              </div>
+            </div>
+          )}
+        </div>
+        <div
+          className="menu-item-container"
+          onMouseLeave={() => setActiveMenu(null)}
+        >
+          <div
+            className="menu-item"
+            onMouseEnter={() => setActiveMenu("Tools")}
+            onClick={() => setActiveMenu("Tools")}
+          >
+            Tools
+          </div>
+          {activeMenu === "Tools" && (
+            <div className="menu-dropdown">
+              <div
+                className="menu-dropdown-item"
+                onClick={() => setShowSettings(true)}
+              >
+                Preferences...
+              </div>
+            </div>
+          )}
+        </div>
+        <div
+          className="menu-item-container"
+          onMouseLeave={() => setActiveMenu(null)}
+        >
+          <div
+            className="menu-item"
+            onMouseEnter={() => setActiveMenu("Help")}
+            onClick={() => setActiveMenu("Help")}
+          >
+            Help
+          </div>
+          {activeMenu === "Help" && (
+            <div className="menu-dropdown">
+              <div
+                className="menu-dropdown-item"
+                onClick={() => {
+                  setShowAbout(true);
+                  setActiveMenu(null);
+                }}
+              >
+                About Vexil
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* 2. Toolbar */}
+      <div className="toolbar">
+        <form className="search-wrapper" onSubmit={handleSearch}>
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+          >
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          <input
+            type="text"
+            placeholder="Search documents, folders, files..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            autoFocus
+          />
+        </form>
+
+        <div className="toolbar-divider"></div>
+
+        <div className="toolbar-tabs">
+          <div
+            className={`toolbar-tab ${activeCategory === "Music" ? "active" : ""}`}
+            onClick={() => setActiveCategory("Music")}
+          >
             <svg
-              className="logo-icon"
+              width="14"
+              height="14"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
               strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
             >
-              <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
+              <path d="M9 18V5l12-2v13"></path>
+              <circle cx="6" cy="18" r="3"></circle>
+              <circle cx="18" cy="16" r="3"></circle>
             </svg>
-            <h1>Vexil Search</h1>
+            Music
           </div>
-        </div>
-
-        <div className="header-status">
-          {indexingProgress !== null ? (
-            <div className="indexing-indicator">
-              <span className="spinner"></span> Cache Building:{" "}
-              {indexingProgress.toLocaleString()} files
-            </div>
-          ) : (
-            <span>Ready</span>
-          )}
-        </div>
-      </header>
-
-      {/* Main Layout Grid */}
-      <main className="main-content">
-        {/* Sidebar */}
-        <aside className="sidebar">
-          <div className="sidebar-section">
-            <h3 className="sidebar-title">Filters</h3>
-            <div className="filter-group">
-              <label className="filter-item active">
-                <input type="checkbox" defaultChecked />
-                All Files
-              </label>
-              <label className="filter-item">
-                <input type="checkbox" />
-                Documents
-              </label>
-              <label className="filter-item">
-                <input type="checkbox" />
-                Images
-              </label>
-            </div>
-          </div>
-
-          <div className="sidebar-section">
-            <h3 className="sidebar-title">Settings</h3>
-            <button
-              className="settings-btn"
-              onClick={() => setShowSettings(true)}
-              style={{
-                width: "100%",
-                justifyContent: "flex-start",
-                gap: "8px",
-              }}
+          <div
+            className={`toolbar-tab ${activeCategory === "Videos" ? "active" : ""}`}
+            onClick={() => setActiveCategory("Videos")}
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
             >
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <circle cx="12" cy="12" r="3"></circle>
-                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l.06-.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-              </svg>
-              Preferences
-            </button>
+              <rect
+                x="2"
+                y="2"
+                width="20"
+                height="20"
+                rx="2.18"
+                ry="2.18"
+              ></rect>
+              <line x1="7" y1="2" x2="7" y2="22"></line>
+              <line x1="17" y1="2" x2="17" y2="22"></line>
+              <line x1="2" y1="12" x2="22" y2="12"></line>
+              <line x1="2" y1="7" x2="7" y2="7"></line>
+              <line x1="2" y1="17" x2="7" y2="17"></line>
+              <line x1="17" y1="17" x2="22" y2="17"></line>
+              <line x1="17" y1="7" x2="22" y2="7"></line>
+            </svg>
+            Videos
           </div>
-        </aside>
-
-        {/* Results Panel */}
-        <section className="results-panel">
-          <div className="search-bar-wrapper">
-            <form className="search-form" onSubmit={handleSearch}>
-              <div className="input-wrapper">
-                <svg
-                  className="search-icon"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                >
-                  <circle cx="11" cy="11" r="8"></circle>
-                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-                </svg>
-                <input
-                  type="text"
-                  placeholder="Search your documents, folders, and files..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  autoFocus
-                />
-              </div>
-            </form>
+          <div
+            className={`toolbar-tab ${activeCategory === "Programs" ? "active" : ""}`}
+            onClick={() => setActiveCategory("Programs")}
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
+              <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+              <line x1="8" y1="21" x2="16" y2="21"></line>
+              <line x1="12" y1="17" x2="12" y2="21"></line>
+            </svg>
+            Programs
           </div>
-
-          <div className="results-header">
-            <div className="results-info">
-              Showing <span className="results-count">{results.length}</span>{" "}
-              local results
-            </div>
+          <div
+            className={`toolbar-tab ${activeCategory === "Downloads" ? "active" : ""}`}
+            onClick={() => setActiveCategory("Downloads")}
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            Downloads
           </div>
+          <div
+            className={`toolbar-tab ${activeCategory === "All" ? "active" : ""}`}
+            onClick={() => setActiveCategory("All")}
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+            </svg>
+            Show All
+          </div>
+        </div>
 
+        <div className="toolbar-divider" style={{ marginLeft: "auto" }}></div>
+
+        <div className="toolbar-group">
+          <button
+            className="tool-btn"
+            disabled={!selectedResult}
+            onClick={() => selectedResult && openResult(selectedResult.path)}
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+              <polyline points="15 3 21 3 21 9"></polyline>
+              <line x1="10" y1="14" x2="21" y2="3"></line>
+            </svg>
+            Open
+          </button>
+          <button
+            className="tool-btn"
+            disabled={!selectedResult}
+            onClick={handleCopyPath}
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+            Copy Path
+          </button>
+          <button
+            className="tool-btn"
+            disabled={!selectedResult}
+            onClick={handleDelete}
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
+              <polyline points="3 6 5 6 21 6"></polyline>
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+            </svg>
+            Delete
+          </button>
+        </div>
+      </div>
+
+      {/* Info Bar */}
+      <div className="info-bar">
+        {filteredResults.length} items found. Showing {activeCategory}
+        {indexingProgress !== null && (
+          <span
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+              marginLeft: "16px",
+              color: "var(--brand-primary)",
+            }}
+          >
+            <div
+              className="spinner"
+              style={{
+                width: "12px",
+                height: "12px",
+                borderTopColor: "var(--brand-primary)",
+              }}
+            ></div>
+            Indexing: {indexingProgress.toLocaleString()} files
+          </span>
+        )}
+      </div>
+
+      {/* Dynamic Scan Progress Bar */}
+      {indexingProgress !== null && (
+        <div className="progress-bar-container">
+          <div className="progress-bar-fill"></div>
+        </div>
+      )}
+
+      {/* 3. Main Content Grid */}
+      <div className="main-content">
+        {/* Results Panel (Left Side Now) */}
+        <div
+          className="results-panel"
+          style={{ borderRight: "1px solid var(--surface-border)" }}
+        >
           <div className="results-container">
             {isSearching ? (
               <div className="loading">
@@ -336,40 +622,47 @@ function App() {
                 <span>Searching local vectors...</span>
               </div>
             ) : results.length > 0 ? (
-              <ul className="results-list">
-                {results.map((result) => (
-                  <li
-                    key={result.id}
-                    className="result-item"
-                    onClick={() => openResult(result.path)}
-                    title={result.path}
-                  >
-                    <div className="result-icon">
-                      <svg
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                      >
-                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
-                      </svg>
-                    </div>
-                    <div className="result-content">
-                      <div className="result-title-row">
-                        <span className="result-title">
-                          <HighlightedSnippet
-                            text={result.snippet || result.title}
-                          />
-                        </span>
-                        <span className="result-relevance">
-                          {result.relevance}%
-                        </span>
-                      </div>
-                      <span className="result-path">{result.path}</span>
-                    </div>
-                  </li>
-                ))}
-              </ul>
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Path</th>
+                    <th>Snippet</th>
+                    <th style={{ textAlign: "right" }}>Relevance</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredResults.map((result) => (
+                    <tr
+                      key={result.id}
+                      className={
+                        selectedResult?.id === result.id ? "selected" : ""
+                      }
+                      onClick={() => setSelectedResult(result)}
+                      onDoubleClick={() => openResult(result.path)}
+                    >
+                      <td className="td-name">
+                        <svg
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                        >
+                          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                        </svg>
+                        {result.title}
+                      </td>
+                      <td title={result.path}>{result.path}</td>
+                      <td>
+                        <HighlightedSnippet
+                          text={result.snippet || result.title}
+                        />
+                      </td>
+                      <td className="td-relevance">{result.relevance}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             ) : (
               <div className="empty-state">
                 <svg
@@ -389,8 +682,151 @@ function App() {
               </div>
             )}
           </div>
-        </section>
-      </main>
+        </div>
+
+        {/* Right Sidebar */}
+        <aside className="right-sidebar">
+          <div className="sidebar-box">
+            <div className="sidebar-box-header">Live Radar</div>
+            <div className="sidebar-box-content">
+              {radarToast ? (
+                <div
+                  className="sidebar-item"
+                  onClick={() => openResult(radarToast)}
+                >
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                  >
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                    <polyline points="14 2 14 8 20 8"></polyline>
+                    <line x1="12" y1="18" x2="12" y2="12"></line>
+                    <line x1="9" y1="15" x2="15" y2="15"></line>
+                  </svg>
+                  {radarToast.split("\\").pop() || radarToast}
+                </div>
+              ) : (
+                <div
+                  className="sidebar-item"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  Monitoring Downloads...
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div
+            className="sidebar-box"
+            style={{ flex: 1, borderBottom: "none" }}
+          >
+            <div className="sidebar-box-header">My Picks</div>
+            <div className="sidebar-box-content">
+              <div className="sidebar-item">
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <polygon points="10 8 16 12 10 16 10 8"></polygon>
+                </svg>
+                Windows Media Player
+              </div>
+              <div className="sidebar-item">
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                  <line x1="3" y1="9" x2="21" y2="9"></line>
+                  <line x1="9" y1="21" x2="9" y2="9"></line>
+                </svg>
+                Solitaire
+              </div>
+              <div className="sidebar-item">
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+                  <polyline points="2 17 12 22 22 17"></polyline>
+                  <polyline points="2 12 12 17 22 12"></polyline>
+                </svg>
+                Minesweeper
+              </div>
+              <div
+                className="sidebar-item"
+                style={{
+                  backgroundColor: "rgba(0,120,212,0.1)",
+                  borderLeft: "2px solid var(--brand-primary)",
+                  fontWeight: 500,
+                }}
+              >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <path d="M12 19l7-7 3 3-7 7-3-3z"></path>
+                  <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"></path>
+                  <path d="M2 2l7.586 7.586"></path>
+                  <circle cx="11" cy="11" r="2"></circle>
+                </svg>
+                Paint
+              </div>
+              <div
+                className="sidebar-item"
+                style={{
+                  marginTop: "16px",
+                  color: "var(--text-muted)",
+                  fontSize: "0.7rem",
+                  paddingLeft: "12px",
+                }}
+              >
+                RECENT
+              </div>
+              {results.slice(0, 3).map((r, i) => (
+                <div
+                  key={i}
+                  className="sidebar-item"
+                  onClick={() => openResult(r.path)}
+                >
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                  >
+                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                  </svg>
+                  {r.title}
+                </div>
+              ))}
+            </div>
+          </div>
+        </aside>
+      </div>
 
       {/* Settings Modal Overlay */}
       {showSettings && (
@@ -432,6 +868,97 @@ function App() {
             >
               Close
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* About Modal */}
+      {showAbout && (
+        <div className="settings-overlay" onClick={() => setShowAbout(false)}>
+          <div
+            className="settings-panel"
+            onClick={(e) => e.stopPropagation()}
+            style={{ width: "360px", textAlign: "center" }}
+          >
+            <div style={{ marginBottom: "16px" }}>
+              <svg
+                width="48"
+                height="48"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="var(--brand-primary)"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                style={{ margin: "0 auto" }}
+              >
+                <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
+              </svg>
+            </div>
+            <h2 className="settings-header" style={{ marginBottom: "8px" }}>
+              Vexil Search
+            </h2>
+            <p
+              style={{
+                color: "var(--text-secondary)",
+                fontSize: "0.85rem",
+                marginBottom: "24px",
+              }}
+            >
+              Version 0.1.0
+              <br />
+              <br />A lightning-fast, local-first search engine designed for
+              privacy and speed.
+            </p>
+            <div
+              style={{
+                padding: "16px",
+                background: "var(--result-hover-bg)",
+                borderRadius: "8px",
+                fontSize: "0.8rem",
+                color: "var(--text-secondary)",
+                marginBottom: "24px",
+                border: "1px solid var(--surface-border)",
+              }}
+            >
+              Built with <strong>Tauri</strong> and <strong>React</strong>.
+            </div>
+            <button
+              className="shortcut-form button"
+              style={{
+                width: "100%",
+                background: "var(--brand-primary)",
+                color: "white",
+                padding: "10px",
+                borderRadius: "8px",
+                border: "none",
+                fontWeight: "600",
+                cursor: "pointer",
+              }}
+              onClick={() => setShowAbout(false)}
+            >
+              OK
+            </button>
+          </div>
+        </div>
+      )}
+
+      {radarToast && (
+        <div className="radar-toast">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+          >
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+            <line x1="12" y1="18" x2="12" y2="12"></line>
+            <line x1="9" y1="15" x2="15" y2="15"></line>
+          </svg>
+          <div className="radar-toast-content">
+            <span className="radar-toast-title">Live Radar Found New File</span>
+            <span className="radar-toast-filename">{radarToast}</span>
           </div>
         </div>
       )}

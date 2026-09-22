@@ -1,10 +1,12 @@
+use notify::{Event, EventKind, RecursiveMode, Watcher};
 use rusqlite::{params, Connection, Result as SqlResult};
 use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, State, Emitter};
 use walkdir::WalkDir;
 
 #[derive(Serialize, Clone)]
@@ -234,6 +236,21 @@ fn search_files(app_handle: AppHandle, query: String) -> Result<Vec<SearchResult
     Ok(final_results)
 }
 
+#[tauri::command]
+fn delete_file(app_handle: AppHandle, path: String) -> Result<String, String> {
+    match fs::remove_file(&path) {
+        Ok(_) => {
+            // Also remove from index
+            let state = app_handle.state::<DbConnection>();
+            if let Ok(conn) = state.0.lock() {
+                let _ = conn.execute("DELETE FROM file_index WHERE path = ?1", params![path]);
+            }
+            Ok("File deleted".to_string())
+        },
+        Err(e) => Err(e.to_string())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -246,9 +263,48 @@ pub fn run() {
                 .unwrap_or_else(|_| PathBuf::from("."));
             let conn = setup_db(&app_dir).expect("Failed to initialize database");
             app.manage(DbConnection(Arc::new(Mutex::new(conn))));
+
+            // Live Radar: Live File System Watcher
+            let app_handle = app.handle().clone();
+            let db_path_clone = db_path(&app_dir);
+
+            thread::spawn(move || {
+                let (tx, rx) = channel();
+                let mut watcher = match notify::recommended_watcher(tx) {
+                    Ok(w) => w,
+                    Err(_) => return,
+                };
+                
+                if let Some(dl_dir) = dirs::download_dir() {
+                    let _ = watcher.watch(&dl_dir, RecursiveMode::Recursive);
+                }
+                
+                for res in rx {
+                    if let Ok(Event { kind: EventKind::Create(_) | EventKind::Modify(_), paths, .. }) = res {
+                        if let Ok(conn) = open_db(&db_path_clone) {
+                            for path in paths {
+                                if path.is_file() {
+                                    let path_str = path.to_string_lossy().to_string();
+                                    if is_junk_dir(&path_str) {
+                                        continue;
+                                    }
+                                    let title_str = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                                    let content_str = format!("{} {}", title_str, path_str);
+                                    
+                                    let _ = conn.execute("DELETE FROM file_index WHERE path = ?1", params![&path_str]);
+                                    let _ = conn.execute("INSERT INTO file_index (title, path, content) VALUES (?1, ?2, ?3)", params![&title_str, &path_str, &content_str]);
+                                    
+                                    let _ = app_handle.emit("live-radar-file", &title_str);
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![start_indexing, search_files])
+        .invoke_handler(tauri::generate_handler![start_indexing, search_files, delete_file])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
