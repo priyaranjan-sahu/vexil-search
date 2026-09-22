@@ -319,8 +319,12 @@ function App() {
     localStorage.setItem("vexil-excluded-dirs", JSON.stringify(excludedDirs));
   }, [excludedDirs]);
 
-  const triggerIndexing = useCallback(() => {
-    invoke("start_indexing", { customDirs, excludedDirs });
+  const triggerIndexing = useCallback(async () => {
+    try {
+      await invoke("start_indexing", { customDirs, excludedDirs });
+    } catch (error) {
+      alert(error);
+    }
   }, [customDirs, excludedDirs]);
 
   useEffect(() => {
@@ -333,8 +337,8 @@ function App() {
       setIndexingProgress(null);
     });
 
-    const unlistenRadar = listen<string>("live-radar-file", (event) => {
-      setRadarToast(event.payload);
+    const unlistenRadar = listen<string[]>("live-radar-batch", (event) => {
+      setRadarToast(`Updated ${event.payload.length} files`);
       setTimeout(() => setRadarToast(null), 4000);
     });
 
@@ -543,7 +547,10 @@ function App() {
                 New Search <span style={{ opacity: 0.5 }}>Ctrl+N</span>
               </div>
               <div className="menu-dropdown-divider"></div>
-              <div className="menu-dropdown-item" onClick={() => {}}>
+              <div
+                className="menu-dropdown-item"
+                onClick={() => getCurrentWindow().close()}
+              >
                 Exit
               </div>
             </div>

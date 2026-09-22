@@ -57,6 +57,22 @@ fn start_indexing(
         }
     };
 
+    let mut valid_custom_dirs = Vec::new();
+    if let Some(custom) = &custom_dirs {
+        let allowed = security::AllowedRoots::new(true);
+        let mut errors = Vec::new();
+        for dir in custom {
+            match allowed.validate(dir) {
+                Ok(valid) => valid_custom_dirs.push(valid),
+                Err(e) => errors.push(format!("'{}': {}", dir, e)),
+            }
+        }
+        if !errors.is_empty() {
+            INDEXING.store(false, std::sync::atomic::Ordering::SeqCst);
+            return Err(format!("Invalid directories: {}", errors.join(", ")));
+        }
+    }
+
     let app_clone = app_handle.clone();
 
     thread::spawn(move || {
@@ -91,13 +107,8 @@ fn start_indexing(
         if let Some(dl_dir) = dirs::download_dir() {
             dirs_to_scan.push(dl_dir);
         }
-        if let Some(custom) = custom_dirs {
-            let allowed = security::AllowedRoots::new(true);
-            for dir in custom {
-                if let Ok(valid) = allowed.validate(&dir) {
-                    dirs_to_scan.push(valid);
-                }
-            }
+        for dir in valid_custom_dirs {
+            dirs_to_scan.push(dir);
         }
 
         let mut exclusions = std::collections::HashSet::new();
@@ -425,6 +436,7 @@ pub fn run() {
                     // Timeout reached or channel disconnected with pending paths
                     if !pending_paths.is_empty() {
                         if let Ok(conn) = open_db(&db_path_clone) {
+                            let mut processed_paths = Vec::new();
                             for path in pending_paths.drain() {
                                 if path.is_file() {
                                     let path_str = path.to_string_lossy().to_string();
@@ -437,8 +449,12 @@ pub fn run() {
                                     let _ = conn.execute("DELETE FROM file_index WHERE path = ?1", params![&path_str]);
                                     let _ = conn.execute("INSERT INTO file_index (title, path, content) VALUES (?1, ?2, ?3)", params![&title_str, &path_str, &content_str]);
                                     
-                                    let _ = app_handle.emit("live-radar-file", &path_str);
+                                    processed_paths.push(path_str);
                                 }
+                            }
+                            if !processed_paths.is_empty() {
+                                // Emit once per batch
+                                let _ = app_handle.emit("live-radar-batch", processed_paths);
                             }
                         } else {
                             pending_paths.clear(); // Clear to avoid infinite loop on DB error
