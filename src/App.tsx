@@ -57,6 +57,41 @@ function App() {
   );
   const [radarToast, setRadarToast] = useState<string | null>(null);
 
+  const [myPicks, setMyPicks] = useState<SearchResult[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("vexil-picks") || "[]");
+    } catch {
+      return [];
+    }
+  });
+  const [recentItems, setRecentItems] = useState<SearchResult[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("vexil-recent") || "[]");
+    } catch {
+      return [];
+    }
+  });
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    result: SearchResult;
+  } | null>(null);
+
+  useEffect(() => {
+    localStorage.setItem("vexil-picks", JSON.stringify(myPicks));
+  }, [myPicks]);
+
+  useEffect(() => {
+    localStorage.setItem("vexil-recent", JSON.stringify(recentItems));
+  }, [recentItems]);
+
+  // Close context menu on click anywhere
+  useEffect(() => {
+    const closeMenu = () => setContextMenu(null);
+    window.addEventListener("click", closeMenu);
+    return () => window.removeEventListener("click", closeMenu);
+  }, []);
+
   // Settings & Theme
   const [showSettings, setShowSettings] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
@@ -218,9 +253,20 @@ function App() {
     runSearch(searchQuery);
   };
 
-  const openResult = async (path: string) => {
+  const openResult = async (item: SearchResult | string) => {
     try {
+      const path = typeof item === "string" ? item : item.path;
       await openPath(path);
+
+      if (typeof item !== "string") {
+        setRecentItems((prev) => {
+          const next = [item, ...prev.filter((r) => r.id !== item.id)].slice(
+            0,
+            5,
+          );
+          return next;
+        });
+      }
     } catch (error) {
       console.error("Failed to open file:", error);
     }
@@ -639,7 +685,12 @@ function App() {
                         selectedResult?.id === result.id ? "selected" : ""
                       }
                       onClick={() => setSelectedResult(result)}
-                      onDoubleClick={() => openResult(result.path)}
+                      onDoubleClick={() => openResult(result)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        setSelectedResult(result);
+                        setContextMenu({ x: e.clientX, y: e.clientY, result });
+                      }}
                     >
                       <td className="td-name">
                         <svg
@@ -726,103 +777,71 @@ function App() {
           >
             <div className="sidebar-box-header">My Picks</div>
             <div className="sidebar-box-content">
-              <div className="sidebar-item">
-                <svg
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                >
-                  <circle cx="12" cy="12" r="10"></circle>
-                  <polygon points="10 8 16 12 10 16 10 8"></polygon>
-                </svg>
-                Windows Media Player
-              </div>
-              <div className="sidebar-item">
-                <svg
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                >
-                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-                  <line x1="3" y1="9" x2="21" y2="9"></line>
-                  <line x1="9" y1="21" x2="9" y2="9"></line>
-                </svg>
-                Solitaire
-              </div>
-              <div className="sidebar-item">
-                <svg
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                >
-                  <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
-                  <polyline points="2 17 12 22 22 17"></polyline>
-                  <polyline points="2 12 12 17 22 12"></polyline>
-                </svg>
-                Minesweeper
-              </div>
-              <div
-                className="sidebar-item"
-                style={{
-                  backgroundColor: "rgba(0,120,212,0.1)",
-                  borderLeft: "2px solid var(--brand-primary)",
-                  fontWeight: 500,
-                }}
-              >
-                <svg
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                >
-                  <path d="M12 19l7-7 3 3-7 7-3-3z"></path>
-                  <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"></path>
-                  <path d="M2 2l7.586 7.586"></path>
-                  <circle cx="11" cy="11" r="2"></circle>
-                </svg>
-                Paint
-              </div>
-              <div
-                className="sidebar-item"
-                style={{
-                  marginTop: "16px",
-                  color: "var(--text-muted)",
-                  fontSize: "0.7rem",
-                  paddingLeft: "12px",
-                }}
-              >
-                RECENT
-              </div>
-              {results.slice(0, 3).map((r, i) => (
-                <div
-                  key={i}
-                  className="sidebar-item"
-                  onClick={() => openResult(r.path)}
-                >
-                  <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
+              {myPicks.length > 0 ? (
+                myPicks.map((pick) => (
+                  <div
+                    className="sidebar-item"
+                    key={pick.id}
+                    onClick={() => openResult(pick)}
+                    title={pick.path}
                   >
-                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
-                  </svg>
-                  {r.title}
+                    <svg
+                      width="16"
+                      height="16"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                    >
+                      <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
+                    </svg>
+                    {pick.title}
+                  </div>
+                ))
+              ) : (
+                <div
+                  className="sidebar-item"
+                  style={{ color: "var(--text-muted)", fontSize: "0.8rem" }}
+                >
+                  Right-click a file to pin it here
                 </div>
-              ))}
+              )}
+            </div>
+
+            <div className="sidebar-box-header" style={{ marginTop: "16px" }}>
+              Recent
+            </div>
+            <div className="sidebar-box-content">
+              {recentItems.length > 0 ? (
+                recentItems.map((recent, i) => (
+                  <div
+                    className="sidebar-item"
+                    key={`recent-${i}`}
+                    onClick={() => openResult(recent)}
+                    title={recent.path}
+                  >
+                    <svg
+                      width="16"
+                      height="16"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                    >
+                      <circle cx="12" cy="12" r="10"></circle>
+                      <polyline points="12 6 12 12 16 14"></polyline>
+                    </svg>
+                    {recent.title}
+                  </div>
+                ))
+              ) : (
+                <div
+                  className="sidebar-item"
+                  style={{ color: "var(--text-muted)", fontSize: "0.8rem" }}
+                >
+                  Recent files will appear here...
+                </div>
+              )}
             </div>
           </div>
         </aside>
@@ -939,6 +958,54 @@ function App() {
             >
               OK
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Custom Context Menu */}
+      {contextMenu && (
+        <div
+          style={{
+            position: "fixed",
+            top: contextMenu.y,
+            left: contextMenu.x,
+            backgroundColor: "var(--surface-color)",
+            border: "1px solid var(--surface-border)",
+            borderRadius: "6px",
+            boxShadow: "0 4px 15px rgba(0,0,0,0.2)",
+            padding: "4px",
+            zIndex: 9999,
+            minWidth: "160px",
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div
+            className="menu-dropdown-item"
+            onClick={() => {
+              const res = contextMenu.result;
+              setMyPicks((prev) => {
+                if (prev.some((p) => p.id === res.id)) {
+                  return prev.filter((p) => p.id !== res.id);
+                }
+                return [...prev, res];
+              });
+              setContextMenu(null);
+            }}
+          >
+            {myPicks.some((p) => p.id === contextMenu.result.id)
+              ? "Unpin from My Picks"
+              : "Pin to My Picks"}
+          </div>
+          <div
+            className="menu-dropdown-item"
+            onClick={() => {
+              if (navigator.clipboard) {
+                navigator.clipboard.writeText(contextMenu.result.path);
+              }
+              setContextMenu(null);
+            }}
+          >
+            Copy Path
           </div>
         </div>
       )}
