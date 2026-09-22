@@ -11,74 +11,11 @@ use std::thread;
 use tauri::{AppHandle, Emitter, Manager, State};
 use walkdir::WalkDir;
 
-#[derive(Serialize, Clone)]
-pub struct SearchResult {
-    pub id: u32,
-    pub title: String,
-    pub snippet: String,
-    pub path: String,
-    pub relevance: u8,
-}
+mod db;
 
-struct DbConnection(Arc<Mutex<Connection>>);
+use db::{db_path, open_db, setup_db, DbConnection, SearchResult};
 
 static INDEXING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-fn db_path(app_dir: &PathBuf) -> PathBuf {
-    app_dir.join("vexil_index.db")
-}
-
-fn open_db(path: &PathBuf) -> SqlResult<Connection> {
-    let conn = Connection::open(path)?;
-    // WAL mode allows the indexer and searches to work concurrently
-    conn.pragma_update(None, "journal_mode", "WAL")?;
-    conn.pragma_update(None, "synchronous", "NORMAL")?;
-
-    // Register regex function
-    conn.create_scalar_function(
-        "REGEXP",
-        2,
-        rusqlite::functions::FunctionFlags::SQLITE_UTF8
-            | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
-        move |ctx| {
-            let expr = ctx.get::<String>(0)?;
-            let s = ctx.get::<String>(1)?;
-            let re = regex::RegexBuilder::new(&expr)
-                .size_limit(100_000)
-                .dfa_size_limit(1_000_000)
-                .build()
-                .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
-            Ok(re.is_match(&s))
-        },
-    )?;
-
-    Ok(conn)
-}
-
-fn setup_db(app_dir: &PathBuf) -> SqlResult<Connection> {
-    fs::create_dir_all(app_dir).unwrap_or_default();
-    let conn = open_db(&db_path(app_dir))?;
-
-    conn.execute(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS file_index USING fts5(
-            title,
-            path,
-            content,
-            tokenize = 'porter'
-        )",
-        [],
-    )?;
-
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS file_metadata (
-            path TEXT PRIMARY KEY,
-            mtime INTEGER
-        )",
-        [],
-    )?;
-
-    Ok(conn)
-}
 
 // Directories that are never worth indexing
 fn is_junk_dir(name: &str) -> bool {
