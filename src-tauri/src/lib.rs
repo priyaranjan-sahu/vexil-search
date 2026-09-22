@@ -186,7 +186,8 @@ fn start_indexing(
                 let path_str = entry.path().to_string_lossy().to_string();
                 let title_str = entry.file_name().to_string_lossy().to_string();
 
-                let mtime = entry.metadata().and_then(|m| m.modified()).ok()
+                let mtime = entry.metadata().ok()
+                    .and_then(|m| m.modified().ok())
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_secs() as i64)
                     .unwrap_or(0);
