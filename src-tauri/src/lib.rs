@@ -64,6 +64,14 @@ fn setup_db(app_dir: &PathBuf) -> SqlResult<Connection> {
         [],
     )?;
 
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS file_metadata (
+            path TEXT PRIMARY KEY,
+            mtime INTEGER
+        )",
+        [],
+    )?;
+
     Ok(conn)
 }
 
@@ -121,7 +129,18 @@ fn start_indexing(
             Err(_) => return done(0),
         };
 
-        let _ = conn.execute("DELETE FROM file_index", []);
+        // Load existing files for incremental sync
+        let mut existing_files = std::collections::HashMap::new();
+        if let Ok(mut stmt) = conn.prepare("SELECT path, mtime FROM file_metadata") {
+            if let Ok(rows) = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            }) {
+                for row in rows.filter_map(|r| r.ok()) {
+                    existing_files.insert(row.0, row.1);
+                }
+            }
+        }
+        let mut seen_files = std::collections::HashSet::new();
 
         let mut dirs_to_scan = Vec::new();
         if let Some(doc_dir) = dirs::document_dir() {
@@ -158,7 +177,7 @@ fn start_indexing(
                 })
                 .filter_map(|e| e.ok());
 
-            let mut batch: Vec<(String, String, String)> = Vec::with_capacity(BATCH);
+            let mut batch: Vec<(String, String, String, i64)> = Vec::with_capacity(BATCH);
 
             for entry in walker {
                 if !entry.file_type().is_file() {
@@ -166,6 +185,21 @@ fn start_indexing(
                 }
                 let path_str = entry.path().to_string_lossy().to_string();
                 let title_str = entry.file_name().to_string_lossy().to_string();
+
+                let mtime = entry.metadata().and_then(|m| m.modified()).ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                
+                seen_files.insert(path_str.clone());
+
+                if let Some(&old_mtime) = existing_files.get(&path_str) {
+                    if old_mtime == mtime {
+                        continue; // File unchanged
+                    }
+                    // Delete old record before updating
+                    let _ = conn.execute("DELETE FROM file_index WHERE path = ?1", params![&path_str]);
+                }
 
                 let mut text_content = String::new();
                 if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
@@ -178,14 +212,18 @@ fn start_indexing(
 
                 let content_str = format!("{} {} {}", title_str, path_str, text_content);
 
-                batch.push((title_str, path_str, content_str));
+                batch.push((title_str, path_str, content_str, mtime));
 
                 if batch.len() >= BATCH {
                     let _ = conn.execute_batch("BEGIN");
-                    for (t, p, c) in batch.drain(..) {
+                    for (t, p, c, m) in batch.drain(..) {
                         let _ = conn.execute(
                             "INSERT INTO file_index (title, path, content) VALUES (?1, ?2, ?3)",
                             params![t, p, c],
+                        );
+                        let _ = conn.execute(
+                            "INSERT OR REPLACE INTO file_metadata (path, mtime) VALUES (?1, ?2)",
+                            params![p, m],
                         );
                     }
                     let _ = conn.execute_batch("COMMIT");
@@ -200,15 +238,29 @@ fn start_indexing(
             // flush remainder
             if !batch.is_empty() {
                 let _ = conn.execute_batch("BEGIN");
-                for (t, p, c) in batch.drain(..) {
+                for (t, p, c, m) in batch {
                     let _ = conn.execute(
                         "INSERT INTO file_index (title, path, content) VALUES (?1, ?2, ?3)",
                         params![t, p, c],
+                    );
+                    let _ = conn.execute(
+                        "INSERT OR REPLACE INTO file_metadata (path, mtime) VALUES (?1, ?2)",
+                        params![p, m],
                     );
                 }
                 let _ = conn.execute_batch("COMMIT");
             }
         }
+
+        // Stale file cleanup
+        let _ = conn.execute_batch("BEGIN");
+        for (path, _) in existing_files {
+            if !seen_files.contains(&path) {
+                let _ = conn.execute("DELETE FROM file_index WHERE path = ?1", params![&path]);
+                let _ = conn.execute("DELETE FROM file_metadata WHERE path = ?1", params![&path]);
+            }
+        }
+        let _ = conn.execute_batch("COMMIT");
 
         done(count);
     });
