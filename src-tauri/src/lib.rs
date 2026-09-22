@@ -1,3 +1,5 @@
+mod security;
+
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use rusqlite::{params, Connection, Result as SqlResult};
 use serde::Serialize;
@@ -41,7 +43,10 @@ fn open_db(path: &PathBuf) -> SqlResult<Connection> {
         move |ctx| {
             let expr = ctx.get::<String>(0)?;
             let s = ctx.get::<String>(1)?;
-            let re = regex::Regex::new(&expr)
+            let re = regex::RegexBuilder::new(&expr)
+                .size_limit(100_000)
+                .dfa_size_limit(1_000_000)
+                .build()
                 .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
             Ok(re.is_match(&s))
         },
@@ -150,8 +155,11 @@ fn start_indexing(
             dirs_to_scan.push(dl_dir);
         }
         if let Some(custom) = custom_dirs {
+            let allowed = security::AllowedRoots::new();
             for dir in custom {
-                dirs_to_scan.push(PathBuf::from(dir));
+                if let Ok(valid) = allowed.validate(&dir) {
+                    dirs_to_scan.push(valid);
+                }
             }
         }
 
@@ -325,7 +333,10 @@ fn search_files(app_handle: AppHandle, query: String) -> Result<Vec<SearchResult
         // SQLite FTS syntax for prefix search; quote terms to avoid syntax errors on special characters
         let terms: Vec<String> = query
             .split_whitespace()
-            .map(|term| format!("\"{}\"*", term.replace('"', "")))
+            .map(|term| {
+                let safe_term = term.replace(|c: char| matches!(c, '"' | '*' | '(' | ')' | '+' | '-' | '~'), "");
+                format!("\"{}\"*", safe_term)
+            })
             .collect();
         let fts_query = terms.join(" AND ");
 
@@ -380,8 +391,11 @@ struct DirEntry {
 
 #[tauri::command]
 fn get_directories(path: String) -> Result<Vec<DirEntry>, String> {
+    let allowed = security::AllowedRoots::new();
+    let valid_path = allowed.validate(&path).map_err(|e| format!("Security: {}", e))?;
+
     let mut dirs = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&path) {
+    if let Ok(entries) = std::fs::read_dir(&valid_path) {
         for entry in entries.filter_map(|e| e.ok()) {
             if let Ok(file_type) = entry.file_type() {
                 if file_type.is_dir() {
@@ -400,7 +414,10 @@ fn get_directories(path: String) -> Result<Vec<DirEntry>, String> {
 
 #[tauri::command]
 fn delete_file(app_handle: AppHandle, path: String) -> Result<String, String> {
-    match fs::remove_file(&path) {
+    let allowed = security::AllowedRoots::new();
+    let valid_path = allowed.validate(&path).map_err(|e| format!("Security: {}", e))?;
+
+    match fs::remove_file(&valid_path) {
         Ok(_) => {
             // Also remove from index
             let state = app_handle.state::<DbConnection>();
