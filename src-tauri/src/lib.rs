@@ -149,7 +149,17 @@ fn start_indexing(app_handle: AppHandle) -> String {
                 }
                 let path_str = entry.path().to_string_lossy().to_string();
                 let title_str = entry.file_name().to_string_lossy().to_string();
-                let content_str = format!("{} {}", title_str, path_str);
+                
+                let mut text_content = String::new();
+                if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
+                    if ["txt", "md", "csv", "json", "rs", "ts", "tsx", "js", "jsx"].contains(&ext) {
+                        if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                            text_content = content.chars().take(2000).collect();
+                        }
+                    }
+                }
+                
+                let content_str = format!("{} {} {}", title_str, path_str, text_content);
 
                 batch.push((title_str, path_str, content_str));
 
