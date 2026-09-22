@@ -26,19 +26,28 @@ const TreeNode = ({
   name,
   customDirs,
   setCustomDirs,
+  excludedDirs,
+  setExcludedDirs,
   isRoot = false,
+  parentIsChecked = false,
 }: {
   path: string;
   name: string;
   customDirs: string[];
   setCustomDirs: React.Dispatch<React.SetStateAction<string[]>>;
+  excludedDirs: string[];
+  setExcludedDirs: React.Dispatch<React.SetStateAction<string[]>>;
   isRoot?: boolean;
+  parentIsChecked?: boolean;
 }) => {
   const [expanded, setExpanded] = useState(false);
   const [children, setChildren] = useState<DirEntry[]>([]);
   const [loading, setLoading] = useState(false);
 
-  const isChecked = customDirs.includes(path);
+  const isExplicitlyChecked = customDirs.includes(path);
+  const isExplicitlyExcluded = excludedDirs.includes(path);
+  const isEffectivelyChecked =
+    (isExplicitlyChecked || parentIsChecked) && !isExplicitlyExcluded;
 
   const toggleExpand = async () => {
     if (!expanded && children.length === 0) {
@@ -55,10 +64,23 @@ const TreeNode = ({
   };
 
   const toggleCheck = () => {
-    if (isChecked) {
-      setCustomDirs((prev) => prev.filter((p) => p !== path));
+    if (parentIsChecked) {
+      if (isEffectivelyChecked) {
+        // Exclude it
+        setExcludedDirs((prev) => [...prev, path]);
+      } else {
+        // Re-include it
+        setExcludedDirs((prev) => prev.filter((p) => p !== path));
+      }
     } else {
-      setCustomDirs((prev) => [...prev, path]);
+      if (isEffectivelyChecked) {
+        // Uncheck it explicitly
+        setCustomDirs((prev) => prev.filter((p) => p !== path));
+      } else {
+        // Check it explicitly
+        setCustomDirs((prev) => [...prev, path]);
+        setExcludedDirs((prev) => prev.filter((p) => p !== path));
+      }
     }
   };
 
@@ -85,7 +107,11 @@ const TreeNode = ({
         >
           {loading ? "⏳" : expanded ? "▼" : "▶"}
         </button>
-        <input type="checkbox" checked={isChecked} onChange={toggleCheck} />
+        <input
+          type="checkbox"
+          checked={isEffectivelyChecked}
+          onChange={toggleCheck}
+        />
         <span
           style={{
             fontSize: "0.9rem",
@@ -106,6 +132,9 @@ const TreeNode = ({
               name={child.name}
               customDirs={customDirs}
               setCustomDirs={setCustomDirs}
+              excludedDirs={excludedDirs}
+              setExcludedDirs={setExcludedDirs}
+              parentIsChecked={isEffectivelyChecked}
             />
           ))}
         </div>
@@ -117,9 +146,13 @@ const TreeNode = ({
 const DirectoryTree = ({
   customDirs,
   setCustomDirs,
+  excludedDirs,
+  setExcludedDirs,
 }: {
   customDirs: string[];
   setCustomDirs: React.Dispatch<React.SetStateAction<string[]>>;
+  excludedDirs: string[];
+  setExcludedDirs: React.Dispatch<React.SetStateAction<string[]>>;
 }) => {
   const [drives, setDrives] = useState<string[]>([]);
 
@@ -149,6 +182,8 @@ const DirectoryTree = ({
           name={drive}
           customDirs={customDirs}
           setCustomDirs={setCustomDirs}
+          excludedDirs={excludedDirs}
+          setExcludedDirs={setExcludedDirs}
           isRoot={true}
         />
       ))}
@@ -268,13 +303,25 @@ function App() {
     }
   });
 
+  const [excludedDirs, setExcludedDirs] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("vexil-excluded-dirs") || "[]");
+    } catch {
+      return [];
+    }
+  });
+
   useEffect(() => {
     localStorage.setItem("vexil-custom-dirs", JSON.stringify(customDirs));
   }, [customDirs]);
 
+  useEffect(() => {
+    localStorage.setItem("vexil-excluded-dirs", JSON.stringify(excludedDirs));
+  }, [excludedDirs]);
+
   const triggerIndexing = useCallback(() => {
-    invoke("start_indexing", { customDirs });
-  }, [customDirs]);
+    invoke("start_indexing", { customDirs, excludedDirs });
+  }, [customDirs, excludedDirs]);
 
   useEffect(() => {
     // Database Indexing Progress Listeners
@@ -1044,6 +1091,8 @@ function App() {
               <DirectoryTree
                 customDirs={customDirs}
                 setCustomDirs={setCustomDirs}
+                excludedDirs={excludedDirs}
+                setExcludedDirs={setExcludedDirs}
               />
             </div>
 

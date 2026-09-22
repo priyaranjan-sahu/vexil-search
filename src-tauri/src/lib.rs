@@ -79,6 +79,7 @@ fn is_junk_dir(name: &str) -> bool {
 fn start_indexing(
     app_handle: AppHandle,
     custom_dirs: Option<Vec<String>>,
+    excluded_dirs: Option<Vec<String>>,
 ) -> Result<String, String> {
     // Skip if an index run is already in progress (also guards React StrictMode double-invoke)
     if INDEXING.load(std::sync::atomic::Ordering::SeqCst) {
@@ -135,6 +136,13 @@ fn start_indexing(
             }
         }
 
+        let mut exclusions = std::collections::HashSet::new();
+        if let Some(excl) = excluded_dirs {
+            for dir in excl {
+                exclusions.insert(PathBuf::from(dir));
+            }
+        }
+
         use tauri::Emitter;
         let mut count: i64 = 0;
         const BATCH: usize = 500;
@@ -143,6 +151,9 @@ fn start_indexing(
             let walker = WalkDir::new(base_dir)
                 .into_iter()
                 .filter_entry(|e| {
+                    if exclusions.contains(e.path()) {
+                        return false;
+                    }
                     !e.file_type().is_dir() || !is_junk_dir(&e.file_name().to_string_lossy())
                 })
                 .filter_map(|e| e.ok());
