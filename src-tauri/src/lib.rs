@@ -333,7 +333,7 @@ pub fn run() {
                                     let _ = conn.execute("DELETE FROM file_index WHERE path = ?1", params![&path_str]);
                                     let _ = conn.execute("INSERT INTO file_index (title, path, content) VALUES (?1, ?2, ?3)", params![&title_str, &path_str, &content_str]);
                                     
-                                    let _ = app_handle.emit("live-radar-file", &title_str);
+                                    let _ = app_handle.emit("live-radar-file", &path_str);
                                 }
                             }
                         }
