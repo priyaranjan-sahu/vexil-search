@@ -1098,9 +1098,14 @@ function App() {
 
             <button
               className="close-settings-btn"
+              style={{
+                background: "var(--brand-primary)",
+                color: "white",
+                fontWeight: "bold",
+              }}
               onClick={() => setShowSettings(false)}
             >
-              Close
+              Save Settings
             </button>
           </div>
         </div>
