@@ -28,6 +28,7 @@ dirs = "7.0.0"
 rusqlite = { version = "0.40.2", features = ["bundled", "functions"] }
 notify = "6"
 regex = "1"
+tauri-plugin-dialog = "2"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

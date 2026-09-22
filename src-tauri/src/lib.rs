@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use tauri::{AppHandle, Manager, State, Emitter};
+use tauri::{AppHandle, Emitter, Manager, State};
 use walkdir::WalkDir;
 
 #[derive(Serialize, Clone)]
@@ -31,14 +31,21 @@ fn open_db(path: &PathBuf) -> SqlResult<Connection> {
     // WAL mode allows the indexer and searches to work concurrently
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
-    
+
     // Register regex function
-    conn.create_scalar_function("REGEXP", 2, rusqlite::functions::FunctionFlags::SQLITE_UTF8 | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC, move |ctx| {
-        let expr = ctx.get::<String>(0)?;
-        let s = ctx.get::<String>(1)?;
-        let re = regex::Regex::new(&expr).map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
-        Ok(re.is_match(&s))
-    })?;
+    conn.create_scalar_function(
+        "REGEXP",
+        2,
+        rusqlite::functions::FunctionFlags::SQLITE_UTF8
+            | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
+        move |ctx| {
+            let expr = ctx.get::<String>(0)?;
+            let s = ctx.get::<String>(1)?;
+            let re = regex::Regex::new(&expr)
+                .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
+            Ok(re.is_match(&s))
+        },
+    )?;
 
     Ok(conn)
 }
@@ -64,19 +71,15 @@ fn setup_db(app_dir: &PathBuf) -> SqlResult<Connection> {
 fn is_junk_dir(name: &str) -> bool {
     matches!(
         name,
-        "node_modules"
-            | ".git"
-            | ".svn"
-            | "target"
-            | ".cache"
-            | "__pycache__"
-            | ".venv"
-            | "venv"
+        "node_modules" | ".git" | ".svn" | "target" | ".cache" | "__pycache__" | ".venv" | "venv"
     )
 }
 
 #[tauri::command]
-fn start_indexing(app_handle: AppHandle, custom_dirs: Option<Vec<String>>) -> Result<String, String> {
+fn start_indexing(
+    app_handle: AppHandle,
+    custom_dirs: Option<Vec<String>>,
+) -> Result<String, String> {
     // Skip if an index run is already in progress (also guards React StrictMode double-invoke)
     if INDEXING.load(std::sync::atomic::Ordering::SeqCst) {
         return Ok("Indexing already in progress".to_string());
@@ -94,9 +97,7 @@ fn start_indexing(app_handle: AppHandle, custom_dirs: Option<Vec<String>>) -> Re
                 return Err("DB lock failed".to_string());
             }
         };
-        match conn.query_row("PRAGMA database_list", [], |row| {
-            row.get::<_, String>(2)
-        }) {
+        match conn.query_row("PRAGMA database_list", [], |row| row.get::<_, String>(2)) {
             Ok(file) => PathBuf::from(file),
             Err(_) => {
                 INDEXING.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -154,7 +155,7 @@ fn start_indexing(app_handle: AppHandle, custom_dirs: Option<Vec<String>>) -> Re
                 }
                 let path_str = entry.path().to_string_lossy().to_string();
                 let title_str = entry.file_name().to_string_lossy().to_string();
-                
+
                 let mut text_content = String::new();
                 if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
                     if ["txt", "md", "csv", "json", "rs", "ts", "tsx", "js", "jsx"].contains(&ext) {
@@ -163,7 +164,7 @@ fn start_indexing(app_handle: AppHandle, custom_dirs: Option<Vec<String>>) -> Re
                         }
                     }
                 }
-                
+
                 let content_str = format!("{} {} {}", title_str, path_str, text_content);
 
                 batch.push((title_str, path_str, content_str));
@@ -291,6 +292,49 @@ fn search_files(app_handle: AppHandle, query: String) -> Result<Vec<SearchResult
 }
 
 #[tauri::command]
+fn get_system_drives() -> Result<Vec<String>, String> {
+    let mut drives = Vec::new();
+    for c in b'A'..=b'Z' {
+        let drive = format!("{}:\\", c as char);
+        if std::path::Path::new(&drive).exists() {
+            drives.push(drive);
+        }
+    }
+    // Also include root `/` for unix systems if we are on one, though this looks windows specific.
+    #[cfg(unix)]
+    if std::path::Path::new("/").exists() && drives.is_empty() {
+        drives.push("/".to_string());
+    }
+    Ok(drives)
+}
+
+#[derive(Serialize)]
+struct DirEntry {
+    name: String,
+    path: String,
+}
+
+#[tauri::command]
+fn get_directories(path: String) -> Result<Vec<DirEntry>, String> {
+    let mut dirs = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&path) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            if let Ok(file_type) = entry.file_type() {
+                if file_type.is_dir() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let path_str = entry.path().to_string_lossy().to_string();
+                    if !is_junk_dir(&name) {
+                        dirs.push(DirEntry { name, path: path_str });
+                    }
+                }
+            }
+        }
+    }
+    dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(dirs)
+}
+
+#[tauri::command]
 fn delete_file(app_handle: AppHandle, path: String) -> Result<String, String> {
     match fs::remove_file(&path) {
         Ok(_) => {
@@ -300,14 +344,15 @@ fn delete_file(app_handle: AppHandle, path: String) -> Result<String, String> {
                 let _ = conn.execute("DELETE FROM file_index WHERE path = ?1", params![path]);
             }
             Ok("File deleted".to_string())
-        },
-        Err(e) => Err(e.to_string())
+        }
+        Err(e) => Err(e.to_string()),
     }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
@@ -358,7 +403,13 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![start_indexing, search_files, delete_file])
+        .invoke_handler(tauri::generate_handler![
+            start_indexing,
+            search_files,
+            delete_file,
+            get_system_drives,
+            get_directories
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

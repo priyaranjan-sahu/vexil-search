@@ -16,6 +16,146 @@ interface SearchResult {
 
 type Theme = "system" | "light" | "dark";
 
+interface DirEntry {
+  name: string;
+  path: string;
+}
+
+const TreeNode = ({
+  path,
+  name,
+  customDirs,
+  setCustomDirs,
+  isRoot = false,
+}: {
+  path: string;
+  name: string;
+  customDirs: string[];
+  setCustomDirs: React.Dispatch<React.SetStateAction<string[]>>;
+  isRoot?: boolean;
+}) => {
+  const [expanded, setExpanded] = useState(false);
+  const [children, setChildren] = useState<DirEntry[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const isChecked = customDirs.includes(path);
+
+  const toggleExpand = async () => {
+    if (!expanded && children.length === 0) {
+      setLoading(true);
+      try {
+        const subdirs = await invoke<DirEntry[]>("get_directories", { path });
+        setChildren(subdirs);
+      } catch (e) {
+        console.error(e);
+      }
+      setLoading(false);
+    }
+    setExpanded(!expanded);
+  };
+
+  const toggleCheck = () => {
+    if (isChecked) {
+      setCustomDirs((prev) => prev.filter((p) => p !== path));
+    } else {
+      setCustomDirs((prev) => [...prev, path]);
+    }
+  };
+
+  return (
+    <div style={{ marginLeft: isRoot ? 0 : 16 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "8px",
+          padding: "4px 0",
+        }}
+      >
+        <button
+          onClick={toggleExpand}
+          style={{
+            background: "transparent",
+            border: "none",
+            cursor: "pointer",
+            width: "20px",
+            padding: 0,
+            color: "var(--text-secondary)",
+          }}
+        >
+          {loading ? "⏳" : expanded ? "▼" : "▶"}
+        </button>
+        <input type="checkbox" checked={isChecked} onChange={toggleCheck} />
+        <span
+          style={{
+            fontSize: "0.9rem",
+            cursor: "default",
+            color: "var(--text-primary)",
+          }}
+          onDoubleClick={toggleExpand}
+        >
+          {name}
+        </span>
+      </div>
+      {expanded && (
+        <div>
+          {children.map((child) => (
+            <TreeNode
+              key={child.path}
+              path={child.path}
+              name={child.name}
+              customDirs={customDirs}
+              setCustomDirs={setCustomDirs}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const DirectoryTree = ({
+  customDirs,
+  setCustomDirs,
+}: {
+  customDirs: string[];
+  setCustomDirs: React.Dispatch<React.SetStateAction<string[]>>;
+}) => {
+  const [drives, setDrives] = useState<string[]>([]);
+
+  useEffect(() => {
+    invoke<string[]>("get_system_drives").then(setDrives).catch(console.error);
+  }, []);
+
+  return (
+    <div
+      style={{
+        maxHeight: "300px",
+        overflowY: "auto",
+        background: "var(--surface-color)",
+        border: "1px solid var(--surface-border)",
+        borderRadius: "6px",
+        padding: "8px",
+        textAlign: "left",
+      }}
+    >
+      {drives.length === 0 && (
+        <div style={{ color: "var(--text-muted)" }}>Loading drives...</div>
+      )}
+      {drives.map((drive) => (
+        <TreeNode
+          key={drive}
+          path={drive}
+          name={drive}
+          customDirs={customDirs}
+          setCustomDirs={setCustomDirs}
+          isRoot={true}
+        />
+      ))}
+    </div>
+  );
+};
+
 /** Renders an FTS snippet safely: only <b>...</b> becomes bold, everything
  * else is escaped by React (no dangerouslySetInnerHTML). */
 function HighlightedSnippet({ text }: { text: string }) {
@@ -127,7 +267,6 @@ function App() {
       return [];
     }
   });
-  const [tempCustomDir, setTempCustomDir] = useState("");
 
   useEffect(() => {
     localStorage.setItem("vexil-custom-dirs", JSON.stringify(customDirs));
@@ -902,69 +1041,10 @@ function App() {
               <label style={{ display: "block", marginBottom: "8px" }}>
                 Custom Scan Paths
               </label>
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  if (tempCustomDir && !customDirs.includes(tempCustomDir)) {
-                    setCustomDirs((prev) => [...prev, tempCustomDir]);
-                    setTempCustomDir("");
-                  }
-                }}
-                className="shortcut-form"
-              >
-                <input
-                  type="text"
-                  value={tempCustomDir}
-                  onChange={(e) => setTempCustomDir(e.target.value)}
-                  placeholder="e.g. C:\Projects"
-                />
-                <button type="submit">Add</button>
-              </form>
-              <div
-                style={{
-                  marginTop: "8px",
-                  maxHeight: "100px",
-                  overflowY: "auto",
-                }}
-              >
-                {customDirs.map((dir) => (
-                  <div
-                    key={dir}
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      fontSize: "0.8rem",
-                      padding: "4px",
-                      background: "var(--result-hover-bg)",
-                      marginBottom: "4px",
-                      borderRadius: "4px",
-                    }}
-                  >
-                    <span
-                      style={{
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {dir}
-                    </span>
-                    <button
-                      onClick={() =>
-                        setCustomDirs((prev) => prev.filter((d) => d !== dir))
-                      }
-                      style={{
-                        background: "transparent",
-                        border: "none",
-                        color: "var(--text-muted)",
-                        cursor: "pointer",
-                      }}
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
-              </div>
+              <DirectoryTree
+                customDirs={customDirs}
+                setCustomDirs={setCustomDirs}
+              />
             </div>
 
             <button
