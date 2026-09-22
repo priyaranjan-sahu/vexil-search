@@ -1,11 +1,23 @@
-use std::path::PathBuf;
+use std::path::{Component, PathBuf};
 
 #[derive(Debug, Clone)]
-pub struct AllowedRoots {}
+pub struct AllowedRoots {
+    roots: Vec<PathBuf>,
+    allow_whole_disk: bool,
+}
 
 impl AllowedRoots {
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(allow_whole_disk: bool) -> Self {
+        let mut roots = Vec::new();
+        if let Some(docs) = dirs::document_dir() { roots.push(docs); }
+        if let Some(dl) = dirs::download_dir() { roots.push(dl); }
+        Self { roots, allow_whole_disk }
+    }
+
+    pub fn add_custom(&mut self, path: PathBuf) {
+        if let Ok(canon) = path.canonicalize() {
+            self.roots.push(canon);
+        }
     }
     
     // In our implementation, since the settings are passed dynamically to `start_indexing`,
@@ -19,11 +31,11 @@ impl AllowedRoots {
         let path = PathBuf::from(user_path);
         
         // 1. No traversal using component `..`
-        if path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        if path.components().any(|c| matches!(c, Component::ParentDir)) {
             return Err(SecurityError::PathTraversal);
         }
         
-        // 2. We allow absolute paths (since it's a desktop app browsing local disks)
+        // 2. We allow absolute paths
         // But if it's relative, we reject it because we don't have a secure base context.
         let abs = if path.is_absolute() {
             path
@@ -34,6 +46,13 @@ impl AllowedRoots {
         // 3. Canonicalize (resolves symlinks, validates existence)
         let canon = abs.canonicalize()
             .map_err(|_| SecurityError::InvalidPath)?;
+            
+        // 4. Enforce allow-list unless whole-disk mode
+        if !self.allow_whole_disk {
+            if !self.roots.iter().any(|r| canon.starts_with(r)) {
+                return Err(SecurityError::OutsideAllowedRoots);
+            }
+        }
         
         Ok(canon)
     }
@@ -44,6 +63,7 @@ pub enum SecurityError {
     PathTraversal,
     RelativePathNotAllowed,
     InvalidPath,
+    OutsideAllowedRoots,
 }
 
 impl std::fmt::Display for SecurityError {
@@ -52,6 +72,7 @@ impl std::fmt::Display for SecurityError {
             SecurityError::PathTraversal => write!(f, "Path traversal attempt detected"),
             SecurityError::RelativePathNotAllowed => write!(f, "Relative paths not allowed without base"),
             SecurityError::InvalidPath => write!(f, "Invalid or non-existent path"),
+            SecurityError::OutsideAllowedRoots => write!(f, "Path outside allowed directories"),
         }
     }
 }

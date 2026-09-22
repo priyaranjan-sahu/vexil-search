@@ -155,7 +155,7 @@ fn start_indexing(
             dirs_to_scan.push(dl_dir);
         }
         if let Some(custom) = custom_dirs {
-            let allowed = security::AllowedRoots::new();
+            let allowed = security::AllowedRoots::new(true);
             for dir in custom {
                 if let Ok(valid) = allowed.validate(&dir) {
                     dirs_to_scan.push(valid);
@@ -391,7 +391,7 @@ struct DirEntry {
 
 #[tauri::command]
 fn get_directories(path: String) -> Result<Vec<DirEntry>, String> {
-    let allowed = security::AllowedRoots::new();
+    let allowed = security::AllowedRoots::new(true);
     let valid_path = allowed.validate(&path).map_err(|e| format!("Security: {}", e))?;
 
     let mut dirs = Vec::new();
@@ -414,7 +414,7 @@ fn get_directories(path: String) -> Result<Vec<DirEntry>, String> {
 
 #[tauri::command]
 fn delete_file(app_handle: AppHandle, path: String) -> Result<String, String> {
-    let allowed = security::AllowedRoots::new();
+    let allowed = security::AllowedRoots::new(true);
     let valid_path = allowed.validate(&path).map_err(|e| format!("Security: {}", e))?;
 
     match fs::remove_file(&valid_path) {
@@ -422,7 +422,8 @@ fn delete_file(app_handle: AppHandle, path: String) -> Result<String, String> {
             // Also remove from index
             let state = app_handle.state::<DbConnection>();
             if let Ok(conn) = state.0.lock() {
-                let _ = conn.execute("DELETE FROM file_index WHERE path = ?1", params![path]);
+                let valid_path_str = valid_path.to_string_lossy().to_string();
+                let _ = conn.execute("DELETE FROM file_index WHERE path = ?1", params![valid_path_str]);
             }
             Ok("File deleted".to_string())
         }
@@ -459,10 +460,35 @@ pub fn run() {
                     let _ = watcher.watch(&dl_dir, RecursiveMode::Recursive);
                 }
                 
-                for res in rx {
-                    if let Ok(Event { kind: EventKind::Create(_) | EventKind::Modify(_), paths, .. }) = res {
-                        if let Ok(conn) = open_db(&db_path_clone) {
+                let mut pending_paths = std::collections::HashSet::new();
+                loop {
+                    let res = if pending_paths.is_empty() {
+                        rx.recv().ok()
+                    } else {
+                        rx.recv_timeout(std::time::Duration::from_millis(500)).ok()
+                    };
+
+                    match res {
+                        Some(Ok(Event { kind: EventKind::Create(_) | EventKind::Modify(_), paths, .. })) => {
                             for path in paths {
+                                pending_paths.insert(path);
+                            }
+                            // Don't process immediately, wait for timeout to coalesce
+                            continue;
+                        }
+                        Some(_) => continue, // Ignore other events
+                        None => {
+                            if pending_paths.is_empty() {
+                                // Channel disconnected and nothing pending
+                                break;
+                            }
+                        }
+                    }
+
+                    // Timeout reached or channel disconnected with pending paths
+                    if !pending_paths.is_empty() {
+                        if let Ok(conn) = open_db(&db_path_clone) {
+                            for path in pending_paths.drain() {
                                 if path.is_file() {
                                     let path_str = path.to_string_lossy().to_string();
                                     if is_junk_dir(&path_str) {
@@ -477,6 +503,8 @@ pub fn run() {
                                     let _ = app_handle.emit("live-radar-file", &path_str);
                                 }
                             }
+                        } else {
+                            pending_paths.clear(); // Clear to avoid infinite loop on DB error
                         }
                     }
                 }
