@@ -1,7 +1,6 @@
 use rusqlite::{Connection, Result as SqlResult};
 use serde::Serialize;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 
 #[derive(Serialize, Clone)]
 pub struct SearchResult {

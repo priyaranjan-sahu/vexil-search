@@ -6,14 +6,13 @@ use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::mpsc::channel;
-use std::sync::{Arc, Mutex};
 use std::thread;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager};
 use walkdir::WalkDir;
 
 mod db;
 
-use db::{db_path, open_db, setup_db, DbPool, SearchResult};
+use db::{db_path, open_db, setup_db, SearchResult};
 
 static INDEXING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
