@@ -29,6 +29,8 @@ function App() {
     setActiveMenu,
     selectedResult,
     setSelectedResult,
+    radarFiles,
+    setRadarFiles,
     radarToast,
     setRadarToast,
     myPicks,
@@ -67,6 +69,7 @@ function App() {
   const shortcutRegisteredRef = useRef(false);
   const currentShortcutRef = useRef(shortcut);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const radarToastTimerRef = useRef<number>(0);
 
   useEffect(() => {
     // Theme Engine
@@ -99,8 +102,13 @@ function App() {
     });
 
     const unlistenRadar = listen<string[]>("live-radar-batch", (event) => {
+      setRadarFiles(event.payload);
       setRadarToast(`Updated ${event.payload.length} files`);
-      setTimeout(() => setRadarToast(null), 4000);
+      window.clearTimeout(radarToastTimerRef.current);
+      radarToastTimerRef.current = window.setTimeout(
+        () => setRadarToast(null),
+        4000,
+      );
     });
 
     triggerIndexing();
@@ -708,8 +716,12 @@ function App() {
           <div className="sidebar-box">
             <div className="sidebar-box-header">Live Radar</div>
             <div className="sidebar-box-content">
-              {radarToast ? (
-                <div className="sidebar-item">
+              {radarFiles.length > 0 ? (
+                <div
+                  className="sidebar-item"
+                  onClick={() => openResult(radarFiles[radarFiles.length - 1])}
+                  title={radarFiles[radarFiles.length - 1]}
+                >
                   <svg
                     width="16"
                     height="16"
@@ -723,7 +735,8 @@ function App() {
                     <line x1="12" y1="18" x2="12" y2="12"></line>
                     <line x1="9" y1="15" x2="15" y2="15"></line>
                   </svg>
-                  {radarToast.split("\\").pop() || radarToast}
+                  {radarFiles[radarFiles.length - 1].split(/[\\/]/).pop() ||
+                    radarFiles[radarFiles.length - 1]}
                 </div>
               ) : (
                 <div
@@ -1001,7 +1014,11 @@ function App() {
           </svg>
           <div className="radar-toast-content">
             <span className="radar-toast-title">Live Radar Found New File</span>
-            <span className="radar-toast-filename">{radarToast}</span>
+            <span className="radar-toast-filename">
+              {radarFiles.length > 0
+                ? radarFiles[radarFiles.length - 1].split(/[\\/]/).pop()
+                : radarToast}
+            </span>
           </div>
         </div>
       )}

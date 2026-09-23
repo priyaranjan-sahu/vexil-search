@@ -75,7 +75,7 @@ fn start_indexing(
     thread::spawn(move || {
         let start_time = std::time::Instant::now();
         println!("Indexing thread started");
-        
+
         let done = |count: i64| {
             use tauri::Emitter;
             let _ = app_clone.emit("indexing-done", count);
@@ -90,7 +90,10 @@ fn start_indexing(
         println!("DB opened in {:?}", start_time.elapsed());
 
         // Removed existing_files memory bottleneck!
-        let sync_id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        let sync_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
 
         let mut dirs_to_scan = Vec::new();
         if let Some(doc_dir) = dirs::document_dir() {
@@ -129,7 +132,7 @@ fn start_indexing(
 
         let (tx, rx) = channel();
         let exclusions_arc = std::sync::Arc::new(exclusions);
-        
+
         println!("WalkBuilder initialized in {:?}", start_time.elapsed());
 
         // Spawn parallel walker
@@ -143,7 +146,9 @@ fn start_indexing(
                             return ignore::WalkState::Skip;
                         }
                         if let Some(file_type) = entry.file_type() {
-                            if file_type.is_dir() && is_junk_dir(&entry.file_name().to_string_lossy()) {
+                            if file_type.is_dir()
+                                && is_junk_dir(&entry.file_name().to_string_lossy())
+                            {
                                 return ignore::WalkState::Skip;
                             }
                             if file_type.is_file() {
@@ -160,21 +165,27 @@ fn start_indexing(
                                 let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
 
                                 let mut text_content = String::new();
-                                if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
-                                    if ["txt", "md", "csv", "json", "rs", "ts", "tsx", "js", "jsx"].contains(&ext) {
+                                if let Some(ext) = entry.path().extension().and_then(|e| e.to_str())
+                                {
+                                    if ["txt", "md", "csv", "json", "rs", "ts", "tsx", "js", "jsx"]
+                                        .contains(&ext)
+                                    {
                                         if let Ok(mut file) = fs::File::open(entry.path()) {
                                             // Read up to 2000 bytes without allocating the whole file
                                             let mut buffer = vec![0; 2000];
                                             if let Ok(bytes_read) = file.read(&mut buffer) {
                                                 buffer.truncate(bytes_read);
-                                                text_content = String::from_utf8_lossy(&buffer).into_owned();
+                                                text_content =
+                                                    String::from_utf8_lossy(&buffer).into_owned();
                                             }
                                         }
                                     }
                                 }
 
-                                let content_str = format!("{} {} {}", title_str, path_str, text_content);
-                                let _ = tx.send((title_str, path_str, content_str, mtime, size as i64));
+                                let content_str =
+                                    format!("{} {} {}", title_str, path_str, text_content);
+                                let _ =
+                                    tx.send((title_str, path_str, content_str, mtime, size as i64));
                             }
                         }
                     }
@@ -186,12 +197,20 @@ fn start_indexing(
         let mut batch_insert: Vec<(String, String, String, i64, i64)> = Vec::with_capacity(BATCH);
         let mut batch_sync: Vec<String> = Vec::with_capacity(BATCH);
 
-        let process_batches = |conn: &mut rusqlite::Connection, b_insert: &mut Vec<(String, String, String, i64, i64)>, b_sync: &mut Vec<String>| {
-            if b_insert.is_empty() && b_sync.is_empty() { return; }
+        let process_batches = |conn: &mut rusqlite::Connection,
+                               b_insert: &mut Vec<(String, String, String, i64, i64)>,
+                               b_sync: &mut Vec<String>| {
+            if b_insert.is_empty() && b_sync.is_empty() {
+                return;
+            }
             let _ = conn.execute_batch("BEGIN");
             {
                 if !b_insert.is_empty() {
-                    let mut stmt_idx = conn.prepare_cached("INSERT INTO file_index (title, path, content) VALUES (?1, ?2, ?3)").unwrap();
+                    let mut stmt_idx = conn
+                        .prepare_cached(
+                            "INSERT INTO file_index (title, path, content) VALUES (?1, ?2, ?3)",
+                        )
+                        .unwrap();
                     let mut stmt_meta = conn.prepare_cached("INSERT OR REPLACE INTO file_metadata (path, mtime, size, sync_id) VALUES (?1, ?2, ?3, ?4)").unwrap();
                     for (t, p, c, m, s) in b_insert.drain(..) {
                         let _ = stmt_idx.execute(params![t, p, c]);
@@ -199,7 +218,9 @@ fn start_indexing(
                     }
                 }
                 if !b_sync.is_empty() {
-                    let mut stmt_update = conn.prepare_cached("UPDATE file_metadata SET sync_id = ?1 WHERE path = ?2").unwrap();
+                    let mut stmt_update = conn
+                        .prepare_cached("UPDATE file_metadata SET sync_id = ?1 WHERE path = ?2")
+                        .unwrap();
                     for p in b_sync.drain(..) {
                         let _ = stmt_update.execute(params![sync_id, p]);
                     }
@@ -208,14 +229,21 @@ fn start_indexing(
             let _ = conn.execute_batch("COMMIT");
         };
 
-        let mut check_mtime = conn.prepare_cached("SELECT mtime FROM file_metadata WHERE path = ?1").unwrap();
-        let mut delete_idx = conn.prepare_cached("DELETE FROM file_index WHERE path = ?1").unwrap();
+        let mut check_mtime = conn
+            .prepare_cached("SELECT mtime FROM file_metadata WHERE path = ?1")
+            .unwrap();
+        let mut delete_idx = conn
+            .prepare_cached("DELETE FROM file_index WHERE path = ?1")
+            .unwrap();
 
         let mut first_file = true;
 
         while let Ok((t, p, c, m, s)) = rx.recv() {
             if first_file {
-                println!("First file received from channel in {:?}", start_time.elapsed());
+                println!(
+                    "First file received from channel in {:?}",
+                    start_time.elapsed()
+                );
                 first_file = false;
             }
 
@@ -238,8 +266,12 @@ fn start_indexing(
                 drop(check_mtime); // MUST drop prepared statements before processing batch due to connection mutability
                 drop(delete_idx);
                 process_batches(&mut conn, &mut batch_insert, &mut batch_sync);
-                check_mtime = conn.prepare_cached("SELECT mtime FROM file_metadata WHERE path = ?1").unwrap();
-                delete_idx = conn.prepare_cached("DELETE FROM file_index WHERE path = ?1").unwrap();
+                check_mtime = conn
+                    .prepare_cached("SELECT mtime FROM file_metadata WHERE path = ?1")
+                    .unwrap();
+                delete_idx = conn
+                    .prepare_cached("DELETE FROM file_index WHERE path = ?1")
+                    .unwrap();
             }
 
             count += 1;
@@ -249,7 +281,7 @@ fn start_indexing(
         }
         drop(check_mtime);
         drop(delete_idx);
-        
+
         // flush remainder
         process_batches(&mut conn, &mut batch_insert, &mut batch_sync);
 
@@ -259,7 +291,10 @@ fn start_indexing(
             "DELETE FROM file_index WHERE path IN (SELECT path FROM file_metadata WHERE sync_id != ?1)",
             params![sync_id],
         );
-        let _ = conn.execute("DELETE FROM file_metadata WHERE sync_id != ?1", params![sync_id]);
+        let _ = conn.execute(
+            "DELETE FROM file_metadata WHERE sync_id != ?1",
+            params![sync_id],
+        );
         let _ = conn.execute_batch("COMMIT");
 
         done(count);
@@ -348,7 +383,8 @@ fn search_files(app_handle: AppHandle, query: String) -> Result<Vec<SearchResult
             .query_map(params![fts_query], |row| {
                 let bm25: f64 = row.get::<_, f64>(4).unwrap_or(0.0);
                 // Trigram tokenizer produces different BM25 ranges than porter.
-                let relevance = (100.0_f64 / (1.0_f64 + bm25.abs() * 0.15_f64)).clamp(1.0_f64, 100.0_f64) as u8;
+                let relevance =
+                    (100.0_f64 / (1.0_f64 + bm25.abs() * 0.15_f64)).clamp(1.0_f64, 100.0_f64) as u8;
                 Ok(SearchResult {
                     id: row.get::<_, u32>(0)?,
                     title: row.get::<_, String>(1)?,
@@ -543,34 +579,69 @@ pub fn run() {
                         if let Ok(conn) = open_db(&db_path_clone) {
                             let mut processed_paths = Vec::new();
                             for path in pending_paths.drain() {
-                                if path.is_file() {
-                                    let path_str = path.to_string_lossy().to_string();
-                                    let is_junk = path.components().any(|c| {
-                                        if let std::path::Component::Normal(name) = c {
-                                            is_junk_dir(&name.to_string_lossy())
-                                        } else {
-                                            false
-                                        }
-                                    });
-                                    if is_junk {
-                                        continue;
-                                    }
-                                    let title_str = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-                                    let content_str = format!("{} {}", title_str, path_str);
-                                    
-                                    let _ = conn.execute("DELETE FROM file_index WHERE path = ?1", params![&path_str]);
-                                    let _ = conn.execute("INSERT INTO file_index (title, path, content) VALUES (?1, ?2, ?3)", params![&title_str, &path_str, &content_str]);
-                                    
-                                    processed_paths.push(path_str);
+                                if !path.is_file() {
+                                    continue;
                                 }
+                                let is_junk = path.components().any(|c| {
+                                    if let std::path::Component::Normal(name) = c {
+                                        is_junk_dir(&name.to_string_lossy())
+                                    } else {
+                                        false
+                                    }
+                                });
+                                if is_junk {
+                                    continue;
+                                }
+                                let path_str = path.to_string_lossy().to_string();
+                                let title_str = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+
+                                let metadata = std::fs::metadata(&path).ok();
+                                let mtime = metadata
+                                    .as_ref()
+                                    .and_then(|m| m.modified().ok())
+                                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                    .map(|d| d.as_secs() as i64)
+                                    .unwrap_or(0);
+                                let size = metadata.map(|m| m.len()).unwrap_or(0);
+
+                                let mut text_content = String::new();
+                                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                                    if ["txt", "md", "csv", "json", "rs", "ts", "tsx", "js", "jsx"].contains(&ext) {
+                                        if let Ok(mut file) = fs::File::open(&path) {
+                                            let mut buffer = vec![0; 2000];
+                                            if let Ok(bytes_read) = file.read(&mut buffer) {
+                                                buffer.truncate(bytes_read);
+                                                text_content = String::from_utf8_lossy(&buffer).into_owned();
+                                            }
+                                        }
+                                    }
+                                }
+                                let content_str = format!("{} {} {}", title_str, path_str, text_content);
+
+                                let _ = conn.execute("DELETE FROM file_index WHERE path = ?1", params![&path_str]);
+                                let _ = conn.execute("INSERT INTO file_index (title, path, content) VALUES (?1, ?2, ?3)", params![&title_str, &path_str, &content_str]);
+
+                                // Update metadata if it exists (preserves sync_id), insert otherwise
+                                let _ = conn.execute(
+                                    "UPDATE file_metadata SET mtime = ?1, size = ?2 WHERE path = ?3",
+                                    params![mtime, size as i64, &path_str],
+                                );
+                                if conn.changes() == 0 {
+                                    let _ = conn.execute(
+                                        "INSERT INTO file_metadata (path, mtime, size, sync_id) VALUES (?1, ?2, ?3, 0)",
+                                        params![&path_str, mtime, size as i64],
+                                    );
+                                }
+
+                                processed_paths.push(path_str);
                             }
                             if !processed_paths.is_empty() {
                                 // Emit once per batch
                                 let _ = app_handle.emit("live-radar-batch", processed_paths);
                             }
                         } else {
-                            thread::sleep(std::time::Duration::from_millis(100)); // backoff
-                            pending_paths.clear(); // Clear to avoid infinite loop on DB error
+                            // DB unavailable: keep pending paths and retry on the next cycle
+                            thread::sleep(std::time::Duration::from_millis(500));
                         }
                     }
                 }

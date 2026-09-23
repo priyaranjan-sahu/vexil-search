@@ -31,6 +31,7 @@ interface SearchState {
   selectedResult: SearchResult | null;
   myPicks: SearchResult[];
   recentItems: SearchResult[];
+  radarFiles: string[];
   radarToast: string | null;
   customDirs: string[];
   excludedDirs: string[];
@@ -52,6 +53,7 @@ interface SearchState {
   addMyPick: (pick: SearchResult) => void;
   removeMyPick: (id: number) => void;
   addRecentItem: (item: SearchResult) => void;
+  setRadarFiles: (paths: string[]) => void;
   setRadarToast: (toast: string | null) => void;
   setCustomDirs: (dirs: string[] | ((prev: string[]) => string[])) => void;
   setExcludedDirs: (dirs: string[] | ((prev: string[]) => string[])) => void;
@@ -77,6 +79,7 @@ export const useSearchStore = create<SearchState>()(
       selectedResult: null,
       myPicks: [],
       recentItems: [],
+      radarFiles: [],
       radarToast: null,
       customDirs: [],
       excludedDirs: [],
@@ -112,6 +115,7 @@ export const useSearchStore = create<SearchState>()(
             ...state.recentItems.filter((r) => r.id !== item.id),
           ].slice(0, 5),
         })),
+      setRadarFiles: (radarFiles) => set({ radarFiles }),
       setRadarToast: (radarToast) => set({ radarToast }),
       setCustomDirs: (customDirs) =>
         set((state) => ({
