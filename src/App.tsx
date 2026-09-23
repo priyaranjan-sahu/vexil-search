@@ -142,15 +142,22 @@ function App() {
         await register(shortcut, async (event) => {
           if (!mounted) return;
           if (event.state === "Pressed") {
-            const appWindow = getCurrentWindow();
-            const isVisible = await appWindow.isVisible();
-            const isMinimized = await appWindow.isMinimized();
-            if (isVisible && !isMinimized) {
-              await appWindow.minimize();
-            } else {
-              if (isMinimized) await appWindow.unminimize();
-              await appWindow.show();
-              await appWindow.setFocus();
+            try {
+              const appWindow = getCurrentWindow();
+              const isVisible = await appWindow.isVisible();
+              const isMinimized = await appWindow.isMinimized();
+              if (isVisible && !isMinimized) {
+                await appWindow.minimize();
+              } else {
+                if (isMinimized) await appWindow.unminimize();
+                await appWindow.show();
+                await appWindow.setFocus();
+                document
+                  .querySelector<HTMLInputElement>(".search-input")
+                  ?.focus();
+              }
+            } catch (error) {
+              console.error("Failed to toggle window via hotkey:", error);
             }
           }
         });
