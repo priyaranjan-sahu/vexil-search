@@ -86,9 +86,26 @@ export const TreeNode = ({
             width: "20px",
             padding: 0,
             color: "var(--text-secondary)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
           }}
         >
-          {loading ? "⏳" : expanded ? "▼" : "▶"}
+          {loading ? (
+            <span style={{ fontSize: "0.75rem", lineHeight: 1 }}>...</span>
+          ) : (
+            <svg
+              viewBox="0 0 12 8"
+              width="12"
+              height="8"
+              style={{
+                color: "var(--text-secondary)",
+                transform: expanded ? "none" : "rotate(-90deg)",
+              }}
+            >
+              <polygon points="0,0 12,0 6,8" fill="currentColor" />
+            </svg>
+          )}
         </button>
         <input
           type="checkbox"

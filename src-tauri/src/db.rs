@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 #[derive(Serialize, Clone)]
 pub struct SearchResult {
-    pub id: u32,
+    pub id: i64,
     pub title: String,
     pub snippet: String,
     pub path: String,

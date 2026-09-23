@@ -203,6 +203,10 @@ function App() {
         } else {
           setSearchQuery("");
         }
+      } else if (e.ctrlKey && (e.key === "n" || e.key === "N")) {
+        e.preventDefault();
+        setSearchQuery("");
+        document.querySelector<HTMLInputElement>(".search-input")?.focus();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -320,7 +324,16 @@ function App() {
           </div>
           {activeMenu === "File" && (
             <div className="menu-dropdown">
-              <div className="menu-dropdown-item">
+              <div
+                className="menu-dropdown-item"
+                onClick={() => {
+                  setSearchQuery("");
+                  setActiveMenu(null);
+                  document
+                    .querySelector<HTMLInputElement>(".search-input")
+                    ?.focus();
+                }}
+              >
                 New Search <span style={{ opacity: 0.5 }}>Ctrl+N</span>
               </div>
               <div className="menu-dropdown-divider"></div>
@@ -346,14 +359,38 @@ function App() {
           </div>
           {activeMenu === "Edit" && (
             <div className="menu-dropdown">
-              <div className="menu-dropdown-item">
+              <div
+                className="menu-dropdown-item"
+                onClick={() => {
+                  handleCopyPath();
+                  setActiveMenu(null);
+                }}
+              >
                 Copy <span style={{ opacity: 0.5 }}>Ctrl+C</span>
               </div>
-              <div className="menu-dropdown-item">
+              <div
+                className="menu-dropdown-item"
+                onClick={async () => {
+                  try {
+                    setSearchQuery(await navigator.clipboard.readText());
+                  } catch {
+                    /* clipboard unavailable */
+                  }
+                  setActiveMenu(null);
+                }}
+              >
                 Paste <span style={{ opacity: 0.5 }}>Ctrl+V</span>
               </div>
               <div className="menu-dropdown-divider"></div>
-              <div className="menu-dropdown-item">
+              <div
+                className="menu-dropdown-item"
+                onClick={() => {
+                  document
+                    .querySelector<HTMLInputElement>(".search-input")
+                    ?.select();
+                  setActiveMenu(null);
+                }}
+              >
                 Select All <span style={{ opacity: 0.5 }}>Ctrl+A</span>
               </div>
             </div>
