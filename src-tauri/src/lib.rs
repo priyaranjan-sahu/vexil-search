@@ -305,7 +305,8 @@ fn start_indexing(
 
 #[tauri::command]
 fn search_files(app_handle: AppHandle, query: String) -> Result<Vec<SearchResult>, String> {
-    if query.trim().is_empty() {
+    let trimmed_query = query.trim();
+    if trimmed_query.is_empty() {
         return Ok(vec![]);
     }
 
@@ -313,10 +314,51 @@ fn search_files(app_handle: AppHandle, query: String) -> Result<Vec<SearchResult
     let conn = pool.get().map_err(|_| "DB pool error".to_string())?;
 
     let is_regex = query.starts_with('/') && query.ends_with('/') && query.len() > 2;
+    // Trigram can only match tokens with >= 3 alphanumeric chars; drop shorter
+    // tokens from the FTS query, and fall back to LIKE when none remain.
+    let alnum_len = |term: &str| term.chars().filter(|c| c.is_alphanumeric()).count();
+    if alnum_len(trimmed_query) == 0 {
+        return Ok(vec![]);
+    }
+    let trigram_capable = query.split_whitespace().any(|t| alnum_len(t) >= 3);
+    let short_query = !is_regex && !trigram_capable;
     let mut final_results = Vec::new();
-    println!("search_files called with query: '{}'", query);
 
-    if is_regex {
+    if short_query {
+        let sql = "
+            SELECT f.rowid, f.title, f.path,
+                   'Matched in path or title' as snippet,
+                   100 as bm25,
+                   m.size, m.mtime
+            FROM file_index f
+            LEFT JOIN file_metadata m ON f.path = m.path
+            WHERE f.path LIKE ? OR f.title LIKE ?
+            LIMIT 50
+        ";
+        let pattern = format!("%{}%", trimmed_query);
+        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+        let results = stmt
+            .query_map(params![pattern, pattern], |row| {
+                Ok(SearchResult {
+                    id: row.get::<_, u32>(0)?,
+                    title: row.get::<_, String>(1)?,
+                    path: row.get::<_, String>(2)?,
+                    snippet: row.get::<_, String>(3)?,
+                    relevance: 100,
+                    size: row.get::<_, i64>(5).unwrap_or(0) as u64,
+                    modified: row.get::<_, i64>(6).unwrap_or(0),
+                })
+            })
+            .map_err(|e| e.to_string())?;
+
+        for res in results {
+            if let Ok(r) = res {
+                final_results.push(r);
+            } else if let Err(e) = res {
+                println!("LIKE query row error: {}", e);
+            }
+        }
+    } else if is_regex {
         let regex_pattern = &query[1..query.len() - 1];
         let sql = "
             SELECT f.rowid, f.title, f.path,
@@ -350,7 +392,6 @@ fn search_files(app_handle: AppHandle, query: String) -> Result<Vec<SearchResult
                 println!("Regex query row error: {}", e);
             }
         }
-        println!("Regex returning {} results", final_results.len());
     } else {
         let sql = "
             SELECT file_index.rowid, file_index.title, file_index.path,
@@ -361,14 +402,16 @@ fn search_files(app_handle: AppHandle, query: String) -> Result<Vec<SearchResult
             LEFT JOIN file_metadata m ON file_index.path = m.path
             WHERE file_index MATCH ?
             ORDER BY rank
-            LIMIT 20
+            LIMIT 50
         ";
 
         let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
 
-        // SQLite FTS syntax for prefix search; quote terms to avoid syntax errors on special characters
+        // SQLite FTS syntax for prefix search; quote terms to avoid syntax
+        // errors on special characters and drop tokens trigram cannot match.
         let terms: Vec<String> = query
             .split_whitespace()
+            .filter(|term| alnum_len(term) >= 3)
             .map(|term| {
                 let safe_term = term.replace(
                     |c: char| matches!(c, '"' | '*' | '(' | ')' | '+' | '-' | '~'),
@@ -409,7 +452,6 @@ fn search_files(app_handle: AppHandle, query: String) -> Result<Vec<SearchResult
                 println!("FTS query row error: {}", e);
             }
         }
-        println!("FTS returning {} results", final_results.len());
     }
 
     Ok(final_results)
