@@ -56,13 +56,7 @@ export const ResultsTable = ({
             <span>Searching local vectors...</span>
           </div>
         ) : filteredResults.length > 0 ? (
-          <div
-            style={{
-              height: `${virtualizer.getTotalSize()}px`,
-              width: "100%",
-              position: "relative",
-            }}
-          >
+          <div style={{ height: "100%", width: "100%" }}>
             <table className="data-table" style={{ width: "100%" }}>
               <thead>
                 <tr
@@ -79,21 +73,25 @@ export const ResultsTable = ({
                   <th style={{ textAlign: "right" }}>Relevance</th>
                 </tr>
               </thead>
-              <tbody
-                style={{ position: "absolute", top: 0, left: 0, width: "100%" }}
-              >
+              <tbody>
+                {virtualizer.getVirtualItems().length > 0 &&
+                  virtualizer.getVirtualItems()[0].start > 0 && (
+                    <tr>
+                      <td
+                        style={{
+                          height: `${virtualizer.getVirtualItems()[0].start}px`,
+                          padding: 0,
+                          border: 0,
+                        }}
+                        colSpan={4}
+                      />
+                    </tr>
+                  )}
                 {virtualizer.getVirtualItems().map((virtualRow) => {
                   const result = filteredResults[virtualRow.index];
                   return (
                     <tr
                       key={result.id}
-                      style={{
-                        position: "absolute",
-                        top: 0,
-                        left: 0,
-                        width: "100%",
-                        transform: `translateY(${virtualRow.start}px)`,
-                      }}
                       className={
                         selectedResult?.id === result.id ? "selected" : ""
                       }
@@ -132,6 +130,23 @@ export const ResultsTable = ({
                     </tr>
                   );
                 })}
+                {virtualizer.getVirtualItems().length > 0 &&
+                  virtualizer.getTotalSize() -
+                    virtualizer.getVirtualItems()[
+                      virtualizer.getVirtualItems().length - 1
+                    ].end >
+                    0 && (
+                    <tr>
+                      <td
+                        style={{
+                          height: `${virtualizer.getTotalSize() - virtualizer.getVirtualItems()[virtualizer.getVirtualItems().length - 1].end}px`,
+                          padding: 0,
+                          border: 0,
+                        }}
+                        colSpan={4}
+                      />
+                    </tr>
+                  )}
               </tbody>
             </table>
           </div>

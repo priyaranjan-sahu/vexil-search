@@ -293,7 +293,7 @@ fn search_files(app_handle: AppHandle, query: String) -> Result<Vec<SearchResult
                     |c: char| matches!(c, '"' | '*' | '(' | ')' | '+' | '-' | '~'),
                     "",
                 );
-                format!("\"{}\"*", safe_term)
+                format!("\"{}\"", safe_term)
             })
             .collect();
         let fts_query = terms.join(" AND ");
@@ -302,8 +302,7 @@ fn search_files(app_handle: AppHandle, query: String) -> Result<Vec<SearchResult
             .query_map(params![fts_query], |row| {
                 let bm25: f64 = row.get::<_, f64>(4).unwrap_or(0.0);
                 // Trigram tokenizer produces different BM25 ranges than porter.
-                // Use a more sensitive formula: relevance = 100 / (1 + |bm25| * 0.15)
-                let relevance = (100.0 / (1.0 + bm25.abs() * 0.15)).clamp(1.0, 100.0) as u8;
+                let relevance = (100.0_f64 / (1.0_f64 + bm25.abs() * 0.15_f64)).clamp(1.0_f64, 100.0_f64) as u8;
                 Ok(SearchResult {
                     id: row.get::<_, u32>(0)?,
                     title: row.get::<_, String>(1)?,
