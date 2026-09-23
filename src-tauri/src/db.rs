@@ -60,8 +60,14 @@ pub fn setup_db(app_dir: &PathBuf) -> SqlResult<Connection> {
     )?;
 
     // Add columns for stateless garbage collection and size if they don't exist in older DB versions
-    let _ = conn.execute("ALTER TABLE file_metadata ADD COLUMN size INTEGER DEFAULT 0", []);
-    let _ = conn.execute("ALTER TABLE file_metadata ADD COLUMN sync_id INTEGER DEFAULT 0", []);
+    let _ = conn.execute(
+        "ALTER TABLE file_metadata ADD COLUMN size INTEGER DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE file_metadata ADD COLUMN sync_id INTEGER DEFAULT 0",
+        [],
+    );
 
     conn.execute(
         "CREATE VIRTUAL TABLE IF NOT EXISTS file_index USING fts5(
@@ -69,15 +75,6 @@ pub fn setup_db(app_dir: &PathBuf) -> SqlResult<Connection> {
             path,
             content,
             tokenize='trigram'
-        )",
-        [],
-    )?;
-
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS file_metadata (
-            path TEXT PRIMARY KEY,
-            mtime INTEGER,
-            size INTEGER
         )",
         [],
     )?;
