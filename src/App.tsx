@@ -18,209 +18,14 @@ interface SearchResult {
 
 type Theme = "system" | "light" | "dark";
 
-interface DirEntry {
-  name: string;
-  path: string;
-}
-
-const TreeNode = ({
-  path,
-  name,
-  customDirs,
-  setCustomDirs,
-  excludedDirs,
-  setExcludedDirs,
-  isRoot = false,
-  parentIsChecked = false,
-}: {
-  path: string;
-  name: string;
-  customDirs: string[];
-  setCustomDirs: React.Dispatch<React.SetStateAction<string[]>>;
-  excludedDirs: string[];
-  setExcludedDirs: React.Dispatch<React.SetStateAction<string[]>>;
-  isRoot?: boolean;
-  parentIsChecked?: boolean;
-}) => {
-  const [expanded, setExpanded] = useState(false);
-  const [children, setChildren] = useState<DirEntry[]>([]);
-  const [loading, setLoading] = useState(false);
-
-  const isExplicitlyChecked = customDirs.includes(path);
-  const isExplicitlyExcluded = excludedDirs.includes(path);
-  const isEffectivelyChecked =
-    (isExplicitlyChecked || parentIsChecked) && !isExplicitlyExcluded;
-
-  const toggleExpand = async () => {
-    if (!expanded && children.length === 0) {
-      setLoading(true);
-      try {
-        const subdirs = await invoke<DirEntry[]>("get_directories", { path });
-        setChildren(subdirs);
-      } catch (e) {
-        console.error(e);
-      }
-      setLoading(false);
-    }
-    setExpanded(!expanded);
-  };
-
-  const toggleCheck = () => {
-    if (parentIsChecked) {
-      if (isEffectivelyChecked) {
-        // Exclude it
-        setExcludedDirs((prev) => [...prev, path]);
-      } else {
-        // Re-include it
-        setExcludedDirs((prev) => prev.filter((p) => p !== path));
-      }
-    } else {
-      if (isEffectivelyChecked) {
-        // Uncheck it explicitly
-        setCustomDirs((prev) => prev.filter((p) => p !== path));
-      } else {
-        // Check it explicitly
-        setCustomDirs((prev) => [...prev, path]);
-        setExcludedDirs((prev) => prev.filter((p) => p !== path));
-      }
-    }
-  };
-
-  return (
-    <div style={{ marginLeft: isRoot ? 0 : 16 }}>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: "8px",
-          padding: "4px 0",
-        }}
-      >
-        <button
-          onClick={toggleExpand}
-          style={{
-            background: "transparent",
-            border: "none",
-            cursor: "pointer",
-            width: "20px",
-            padding: 0,
-            color: "var(--text-secondary)",
-          }}
-        >
-          {loading ? "⏳" : expanded ? "▼" : "▶"}
-        </button>
-        <input
-          type="checkbox"
-          checked={isEffectivelyChecked}
-          onChange={toggleCheck}
-        />
-        <span
-          style={{
-            fontSize: "0.9rem",
-            cursor: "default",
-            color: "var(--text-primary)",
-          }}
-          onDoubleClick={toggleExpand}
-        >
-          {name}
-        </span>
-      </div>
-      {expanded && (
-        <div>
-          {children.map((child) => (
-            <TreeNode
-              key={child.path}
-              path={child.path}
-              name={child.name}
-              customDirs={customDirs}
-              setCustomDirs={setCustomDirs}
-              excludedDirs={excludedDirs}
-              setExcludedDirs={setExcludedDirs}
-              parentIsChecked={isEffectivelyChecked}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-};
-
-const DirectoryTree = ({
-  customDirs,
-  setCustomDirs,
-  excludedDirs,
-  setExcludedDirs,
-}: {
-  customDirs: string[];
-  setCustomDirs: React.Dispatch<React.SetStateAction<string[]>>;
-  excludedDirs: string[];
-  setExcludedDirs: React.Dispatch<React.SetStateAction<string[]>>;
-}) => {
-  const [drives, setDrives] = useState<string[]>([]);
-
-  useEffect(() => {
-    invoke<string[]>("get_system_drives").then(setDrives).catch(console.error);
-  }, []);
-
-  return (
-    <div
-      style={{
-        maxHeight: "300px",
-        overflowY: "auto",
-        background: "var(--surface-color)",
-        border: "1px solid var(--surface-border)",
-        borderRadius: "6px",
-        padding: "8px",
-        textAlign: "left",
-      }}
-    >
-      {drives.length === 0 && (
-        <div style={{ color: "var(--text-muted)" }}>Loading drives...</div>
-      )}
-      {drives.map((drive) => (
-        <TreeNode
-          key={drive}
-          path={drive}
-          name={drive}
-          customDirs={customDirs}
-          setCustomDirs={setCustomDirs}
-          excludedDirs={excludedDirs}
-          setExcludedDirs={setExcludedDirs}
-          isRoot={true}
-        />
-      ))}
-    </div>
-  );
-};
-
-/** Renders an FTS snippet safely: only <b>...</b> becomes bold, everything
- * else is escaped by React (no dangerouslySetInnerHTML). */
-function HighlightedSnippet({ text }: { text: string }) {
-  const parts = text.split(/(<b>|<\/b>)/);
-  let bold = false;
-  const nodes: React.ReactNode[] = [];
-  for (const part of parts) {
-    if (part === "<b>") {
-      bold = true;
-    } else if (part === "</b>") {
-      bold = false;
-    } else if (part) {
-      nodes.push(
-        bold ? (
-          <b key={nodes.length}>{part}</b>
-        ) : (
-          <span key={nodes.length}>{part}</span>
-        ),
-      );
-    }
-  }
-  return <>{nodes}</>;
-}
+import { DirectoryTree } from "./components/DirectoryTree";
+import { ResultsTable } from "./components/ResultsTable";
+import { useSearchStore } from "./store/searchStore";
 
 function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
+  const setIsSearching = useSearchStore((state) => state.setIsSearching);
   const [indexingProgress, setIndexingProgress] = useState<number | null>(null);
 
   const [activeCategory, setActiveCategory] = useState<string>("All");
@@ -297,7 +102,7 @@ function App() {
     localStorage.setItem("vexil-theme", theme);
   }, [theme]);
 
-  const [customDirs, setCustomDirs] = useState<string[]>(() => {
+  const [customDirs] = useState<string[]>(() => {
     try {
       return JSON.parse(localStorage.getItem("vexil-custom-dirs") || "[]");
     } catch {
@@ -305,7 +110,7 @@ function App() {
     }
   });
 
-  const [excludedDirs, setExcludedDirs] = useState<string[]>(() => {
+  const [excludedDirs] = useState<string[]>(() => {
     try {
       return JSON.parse(localStorage.getItem("vexil-excluded-dirs") || "[]");
     } catch {
@@ -415,22 +220,25 @@ function App() {
     };
   }, [shortcut]);
 
-  const runSearch = useCallback(async (query: string) => {
-    if (!query.trim()) {
-      setResults([]);
-      return;
-    }
-    setIsSearching(true);
-    try {
-      const res: SearchResult[] = await invoke("search_files", { query });
-      setResults(res);
-      setSelectedResult(null);
-    } catch (error) {
-      console.error("Failed to search files:", error);
-    } finally {
-      setIsSearching(false);
-    }
-  }, []);
+  const runSearch = useCallback(
+    async (query: string) => {
+      if (!query.trim()) {
+        setResults([]);
+        return;
+      }
+      setIsSearching(true);
+      try {
+        const res: SearchResult[] = await invoke("search_files", { query });
+        setResults(res);
+        setSelectedResult(null);
+      } catch (error) {
+        console.error("Failed to search files:", error);
+      } finally {
+        setIsSearching(false);
+      }
+    },
+    [setIsSearching],
+  );
 
   // Live search, debounced while typing
   useEffect(() => {
@@ -926,83 +734,12 @@ function App() {
       {/* 3. Main Content Grid */}
       <div className="main-content">
         {/* Results Panel (Left Side Now) */}
-        <div
-          className="results-panel"
-          style={{ borderRight: "1px solid var(--surface-border)" }}
-        >
-          <div className="results-container">
-            {isSearching ? (
-              <div className="loading">
-                <div className="spinner"></div>
-                <span>Searching local vectors...</span>
-              </div>
-            ) : results.length > 0 ? (
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>Path</th>
-                    <th>Snippet</th>
-                    <th style={{ textAlign: "right" }}>Relevance</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredResults.map((result) => (
-                    <tr
-                      key={result.id}
-                      className={
-                        selectedResult?.id === result.id ? "selected" : ""
-                      }
-                      onClick={() => setSelectedResult(result)}
-                      onDoubleClick={() => openResult(result)}
-                      onContextMenu={(e) => {
-                        e.preventDefault();
-                        setSelectedResult(result);
-                        setContextMenu({ x: e.clientX, y: e.clientY, result });
-                      }}
-                    >
-                      <td className="td-name">
-                        <svg
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                        >
-                          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
-                        </svg>
-                        {result.title}
-                      </td>
-                      <td title={result.path}>{result.path}</td>
-                      <td>
-                        <HighlightedSnippet
-                          text={result.snippet || result.title}
-                        />
-                      </td>
-                      <td className="td-relevance">{result.relevance}%</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            ) : (
-              <div className="empty-state">
-                <svg
-                  className="empty-icon"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                >
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                  <polyline points="14 2 14 8 20 8"></polyline>
-                  <line x1="16" y1="13" x2="8" y2="13"></line>
-                  <line x1="16" y1="17" x2="8" y2="17"></line>
-                  <polyline points="10 9 9 9 8 9"></polyline>
-                </svg>
-                <p>Type a query to securely search your private documents.</p>
-              </div>
-            )}
-          </div>
-        </div>
+        <ResultsTable
+          filteredResults={filteredResults}
+          selectedResult={selectedResult}
+          setSelectedResult={setSelectedResult}
+          setContextMenu={setContextMenu}
+        />
 
         {/* Right Sidebar */}
         <aside className="right-sidebar">
@@ -1154,12 +891,7 @@ function App() {
               <label style={{ display: "block", marginBottom: "8px" }}>
                 Custom Scan Paths
               </label>
-              <DirectoryTree
-                customDirs={customDirs}
-                setCustomDirs={setCustomDirs}
-                excludedDirs={excludedDirs}
-                setExcludedDirs={setExcludedDirs}
-              />
+              <DirectoryTree />
             </div>
 
             <button
