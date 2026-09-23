@@ -10,9 +10,13 @@ pub struct SearchResult {
     pub snippet: String,
     pub path: String,
     pub relevance: u8,
+    pub size: u64,
+    pub modified: i64,
 }
 
-pub struct DbConnection(pub Arc<Mutex<Connection>>);
+use r2d2_sqlite::SqliteConnectionManager;
+
+pub type DbPool = r2d2::Pool<SqliteConnectionManager>;
 
 pub fn db_path(app_dir: &PathBuf) -> PathBuf {
     app_dir.join("vexil_index.db")
@@ -56,11 +60,12 @@ pub fn setup_db(app_dir: &PathBuf) -> SqlResult<Connection> {
         )",
         [],
     )?;
-    
+
     conn.execute(
         "CREATE TABLE IF NOT EXISTS file_metadata (
             path TEXT PRIMARY KEY,
-            mtime INTEGER
+            mtime INTEGER,
+            size INTEGER
         )",
         [],
     )?;

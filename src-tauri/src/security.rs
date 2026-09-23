@@ -9,17 +9,25 @@ pub struct AllowedRoots {
 impl AllowedRoots {
     pub fn new(allow_whole_disk: bool) -> Self {
         let mut roots = Vec::new();
-        if let Some(docs) = dirs::document_dir() { roots.push(docs); }
-        if let Some(dl) = dirs::download_dir() { roots.push(dl); }
-        Self { roots, allow_whole_disk }
+        if let Some(docs) = dirs::document_dir() {
+            roots.push(docs);
+        }
+        if let Some(dl) = dirs::download_dir() {
+            roots.push(dl);
+        }
+        Self {
+            roots,
+            allow_whole_disk,
+        }
     }
 
+    #[allow(dead_code)]
     pub fn add_custom(&mut self, path: PathBuf) {
         if let Ok(canon) = path.canonicalize() {
             self.roots.push(canon);
         }
     }
-    
+
     // In our implementation, since the settings are passed dynamically to `start_indexing`,
     // it's slightly trickier to mutate this global state. For now, since `get_directories`
     // can technically browse anywhere on the system (e.g. from Root Drives), we need to
@@ -29,12 +37,12 @@ impl AllowedRoots {
     // So the primary danger is Path Traversal (e.g. going up from an allowed base).
     pub fn validate(&self, user_path: &str) -> Result<PathBuf, SecurityError> {
         let path = PathBuf::from(user_path);
-        
+
         // 1. No traversal using component `..`
         if path.components().any(|c| matches!(c, Component::ParentDir)) {
             return Err(SecurityError::PathTraversal);
         }
-        
+
         // 2. We allow absolute paths
         // But if it's relative, we reject it because we don't have a secure base context.
         let abs = if path.is_absolute() {
@@ -42,18 +50,17 @@ impl AllowedRoots {
         } else {
             return Err(SecurityError::RelativePathNotAllowed);
         };
-        
+
         // 3. Canonicalize (resolves symlinks, validates existence)
-        let canon = abs.canonicalize()
-            .map_err(|_| SecurityError::InvalidPath)?;
-            
+        let canon = abs.canonicalize().map_err(|_| SecurityError::InvalidPath)?;
+
         // 4. Enforce allow-list unless whole-disk mode
         if !self.allow_whole_disk {
             if !self.roots.iter().any(|r| canon.starts_with(r)) {
                 return Err(SecurityError::OutsideAllowedRoots);
             }
         }
-        
+
         Ok(canon)
     }
 }
@@ -70,7 +77,9 @@ impl std::fmt::Display for SecurityError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SecurityError::PathTraversal => write!(f, "Path traversal attempt detected"),
-            SecurityError::RelativePathNotAllowed => write!(f, "Relative paths not allowed without base"),
+            SecurityError::RelativePathNotAllowed => {
+                write!(f, "Relative paths not allowed without base")
+            }
             SecurityError::InvalidPath => write!(f, "Invalid or non-existent path"),
             SecurityError::OutsideAllowedRoots => write!(f, "Path outside allowed directories"),
         }

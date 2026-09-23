@@ -1,7 +1,7 @@
 mod security;
 
 use notify::{Event, EventKind, RecursiveMode, Watcher};
-use rusqlite::{params, Connection, Result as SqlResult};
+use rusqlite::params;
 use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;
@@ -13,7 +13,7 @@ use walkdir::WalkDir;
 
 mod db;
 
-use db::{db_path, open_db, setup_db, DbConnection, SearchResult};
+use db::{db_path, open_db, setup_db, DbPool, SearchResult};
 
 static INDEXING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -37,11 +37,9 @@ fn start_indexing(
     }
     INDEXING.store(true, std::sync::atomic::Ordering::SeqCst);
 
-    let state: State<DbConnection> = app_handle.state();
-    // Hold the shared connection only long enough to learn the DB location;
-    // the worker opens its own connection so searches never block on the mutex.
+    let pool = app_handle.state::<db::DbPool>();
     let path = {
-        let conn = match state.0.lock() {
+        let conn = match pool.get() {
             Ok(c) => c,
             Err(_) => {
                 INDEXING.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -133,7 +131,7 @@ fn start_indexing(
                 })
                 .filter_map(|e| e.ok());
 
-            let mut batch: Vec<(String, String, String, i64)> = Vec::with_capacity(BATCH);
+            let mut batch: Vec<(String, String, String, i64, i64)> = Vec::with_capacity(BATCH);
 
             for entry in walker {
                 if !entry.file_type().is_file() {
@@ -142,12 +140,15 @@ fn start_indexing(
                 let path_str = entry.path().to_string_lossy().to_string();
                 let title_str = entry.file_name().to_string_lossy().to_string();
 
-                let mtime = entry.metadata().ok()
+                let metadata = entry.metadata().ok();
+                let mtime = metadata
+                    .as_ref()
                     .and_then(|m| m.modified().ok())
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_secs() as i64)
                     .unwrap_or(0);
-                
+                let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+
                 seen_files.insert(path_str.clone());
 
                 if let Some(&old_mtime) = existing_files.get(&path_str) {
@@ -155,7 +156,8 @@ fn start_indexing(
                         continue; // File unchanged
                     }
                     // Delete old record before updating
-                    let _ = conn.execute("DELETE FROM file_index WHERE path = ?1", params![&path_str]);
+                    let _ =
+                        conn.execute("DELETE FROM file_index WHERE path = ?1", params![&path_str]);
                 }
 
                 let mut text_content = String::new();
@@ -169,18 +171,18 @@ fn start_indexing(
 
                 let content_str = format!("{} {} {}", title_str, path_str, text_content);
 
-                batch.push((title_str, path_str, content_str, mtime));
+                batch.push((title_str, path_str, content_str, mtime, size as i64));
 
                 if batch.len() >= BATCH {
                     let _ = conn.execute_batch("BEGIN");
-                    for (t, p, c, m) in batch.drain(..) {
+                    for (t, p, c, m, s) in batch.drain(..) {
                         let _ = conn.execute(
                             "INSERT INTO file_index (title, path, content) VALUES (?1, ?2, ?3)",
                             params![t, p, c],
                         );
                         let _ = conn.execute(
-                            "INSERT OR REPLACE INTO file_metadata (path, mtime) VALUES (?1, ?2)",
-                            params![p, m],
+                            "INSERT OR REPLACE INTO file_metadata (path, mtime, size) VALUES (?1, ?2, ?3)",
+                            params![p, m, s],
                         );
                     }
                     let _ = conn.execute_batch("COMMIT");
@@ -195,14 +197,14 @@ fn start_indexing(
             // flush remainder
             if !batch.is_empty() {
                 let _ = conn.execute_batch("BEGIN");
-                for (t, p, c, m) in batch {
+                for (t, p, c, m, s) in batch {
                     let _ = conn.execute(
                         "INSERT INTO file_index (title, path, content) VALUES (?1, ?2, ?3)",
                         params![t, p, c],
                     );
                     let _ = conn.execute(
-                        "INSERT OR REPLACE INTO file_metadata (path, mtime) VALUES (?1, ?2)",
-                        params![p, m],
+                        "INSERT OR REPLACE INTO file_metadata (path, mtime, size) VALUES (?1, ?2, ?3)",
+                        params![p, m, s],
                     );
                 }
                 let _ = conn.execute_batch("COMMIT");
@@ -231,8 +233,8 @@ fn search_files(app_handle: AppHandle, query: String) -> Result<Vec<SearchResult
         return Ok(vec![]);
     }
 
-    let state = app_handle.state::<DbConnection>();
-    let conn = state.0.lock().map_err(|_| "DB lock failed".to_string())?;
+    let pool = app_handle.state::<db::DbPool>();
+    let conn = pool.get().map_err(|_| "DB pool error".to_string())?;
 
     let is_regex = query.starts_with('/') && query.ends_with('/') && query.len() > 2;
     let mut final_results = Vec::new();
@@ -240,11 +242,13 @@ fn search_files(app_handle: AppHandle, query: String) -> Result<Vec<SearchResult
     if is_regex {
         let regex_pattern = &query[1..query.len() - 1];
         let sql = "
-            SELECT rowid, title, path,
+            SELECT f.rowid, f.title, f.path,
                    'Regex match found in path or title' as snippet,
-                   100 as bm25
-            FROM file_index
-            WHERE path REGEXP ? OR title REGEXP ?
+                   100 as bm25,
+                   m.size, m.mtime
+            FROM file_index f
+            LEFT JOIN file_metadata m ON f.path = m.path
+            WHERE f.path REGEXP ? OR f.title REGEXP ?
             LIMIT 50
         ";
         let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
@@ -256,6 +260,8 @@ fn search_files(app_handle: AppHandle, query: String) -> Result<Vec<SearchResult
                     path: row.get::<_, String>(2)?,
                     snippet: row.get::<_, String>(3)?,
                     relevance: 100,
+                    size: row.get::<_, i64>(5).unwrap_or(0) as u64,
+                    modified: row.get::<_, i64>(6).unwrap_or(0),
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -267,11 +273,13 @@ fn search_files(app_handle: AppHandle, query: String) -> Result<Vec<SearchResult
         }
     } else {
         let sql = "
-            SELECT rowid, title, path,
-                   snippet(file_index, 0, '<b>', '</b>', '...', 10),
-                   bm25(file_index)
-            FROM file_index
-            WHERE file_index MATCH ?
+            SELECT f.rowid, f.title, f.path,
+                   snippet(f, 0, '<b>', '</b>', '...', 10),
+                   bm25(f),
+                   m.size, m.mtime
+            FROM file_index f
+            LEFT JOIN file_metadata m ON f.path = m.path
+            WHERE f MATCH ?
             ORDER BY rank
             LIMIT 20
         ";
@@ -282,7 +290,10 @@ fn search_files(app_handle: AppHandle, query: String) -> Result<Vec<SearchResult
         let terms: Vec<String> = query
             .split_whitespace()
             .map(|term| {
-                let safe_term = term.replace(|c: char| matches!(c, '"' | '*' | '(' | ')' | '+' | '-' | '~'), "");
+                let safe_term = term.replace(
+                    |c: char| matches!(c, '"' | '*' | '(' | ')' | '+' | '-' | '~'),
+                    "",
+                );
                 format!("\"{}\"*", safe_term)
             })
             .collect();
@@ -291,7 +302,9 @@ fn search_files(app_handle: AppHandle, query: String) -> Result<Vec<SearchResult
         let results = stmt
             .query_map(params![fts_query], |row| {
                 let bm25: f64 = row.get::<_, f64>(4).unwrap_or(0.0);
-                let relevance = (100.0 / (1.0 + bm25.abs() * 0.5)).clamp(1.0, 100.0) as u8;
+                // Trigram tokenizer produces different BM25 ranges than porter.
+                // Use a more sensitive formula: relevance = 100 / (1 + |bm25| * 0.15)
+                let relevance = (100.0 / (1.0 + bm25.abs() * 0.15)).clamp(1.0, 100.0) as u8;
                 Ok(SearchResult {
                     id: row.get::<_, u32>(0)?,
                     title: row.get::<_, String>(1)?,
@@ -300,6 +313,8 @@ fn search_files(app_handle: AppHandle, query: String) -> Result<Vec<SearchResult
                         .get::<_, String>(3)
                         .unwrap_or_else(|_| "File matched".to_string()),
                     relevance,
+                    size: row.get::<_, i64>(5).unwrap_or(0) as u64,
+                    modified: row.get::<_, i64>(6).unwrap_or(0),
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -340,7 +355,9 @@ struct DirEntry {
 #[tauri::command]
 fn get_directories(path: String) -> Result<Vec<DirEntry>, String> {
     let allowed = security::AllowedRoots::new(true);
-    let valid_path = allowed.validate(&path).map_err(|e| format!("Security: {}", e))?;
+    let valid_path = allowed
+        .validate(&path)
+        .map_err(|e| format!("Security: {}", e))?;
 
     let mut dirs = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&valid_path) {
@@ -350,7 +367,10 @@ fn get_directories(path: String) -> Result<Vec<DirEntry>, String> {
                     let name = entry.file_name().to_string_lossy().to_string();
                     let path_str = entry.path().to_string_lossy().to_string();
                     if !is_junk_dir(&name) {
-                        dirs.push(DirEntry { name, path: path_str });
+                        dirs.push(DirEntry {
+                            name,
+                            path: path_str,
+                        });
                     }
                 }
             }
@@ -363,15 +383,20 @@ fn get_directories(path: String) -> Result<Vec<DirEntry>, String> {
 #[tauri::command]
 fn delete_file(app_handle: AppHandle, path: String) -> Result<String, String> {
     let allowed = security::AllowedRoots::new(true);
-    let valid_path = allowed.validate(&path).map_err(|e| format!("Security: {}", e))?;
+    let valid_path = allowed
+        .validate(&path)
+        .map_err(|e| format!("Security: {}", e))?;
 
     match fs::remove_file(&valid_path) {
         Ok(_) => {
             // Also remove from index
-            let state = app_handle.state::<DbConnection>();
-            if let Ok(conn) = state.0.lock() {
+            let pool = app_handle.state::<db::DbPool>();
+            if let Ok(conn) = pool.get() {
                 let valid_path_str = valid_path.to_string_lossy().to_string();
-                let _ = conn.execute("DELETE FROM file_index WHERE path = ?1", params![valid_path_str]);
+                let _ = conn.execute(
+                    "DELETE FROM file_index WHERE path = ?1",
+                    params![valid_path_str],
+                );
             }
             Ok("File deleted".to_string())
         }
@@ -390,8 +415,33 @@ pub fn run() {
                 .path()
                 .app_data_dir()
                 .unwrap_or_else(|_| PathBuf::from("."));
-            let conn = setup_db(&app_dir).expect("Failed to initialize database");
-            app.manage(DbConnection(Arc::new(Mutex::new(conn))));
+            setup_db(&app_dir).expect("Failed to initialize database");
+            
+            // Create connection pool (4 connections for concurrent reads)
+            let manager = r2d2_sqlite::SqliteConnectionManager::file(db_path(&app_dir))
+                .with_init(|c| {
+                    c.pragma_update(None, "journal_mode", "WAL")?;
+                    c.pragma_update(None, "synchronous", "NORMAL")?;
+                    c.create_scalar_function(
+                        "REGEXP",
+                        2,
+                        rusqlite::functions::FunctionFlags::SQLITE_UTF8
+                            | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
+                        move |ctx| {
+                            let expr = ctx.get::<String>(0)?;
+                            let s = ctx.get::<String>(1)?;
+                            let re = regex::RegexBuilder::new(&expr)
+                                .size_limit(100_000)
+                                .dfa_size_limit(1_000_000)
+                                .build()
+                                .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
+                            Ok(re.is_match(&s))
+                        },
+                    )?;
+                    Ok(())
+                });
+            let pool = r2d2::Pool::builder().max_size(4).build(manager).expect("Failed to create DB pool");
+            app.manage(pool);
 
             // Live Radar: Live File System Watcher
             let app_handle = app.handle().clone();

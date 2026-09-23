@@ -12,6 +12,8 @@ interface SearchResult {
   snippet: string;
   path: string;
   relevance: number;
+  size: number;
+  modified: number;
 }
 
 type Theme = "system" | "light" | "dark";
@@ -505,22 +507,79 @@ function App() {
   };
 
   const getFilteredResults = () => {
-    if (activeCategory === "All") return results;
     return results.filter((r) => {
-      const ext = r.path.split(".").pop()?.toLowerCase() || "";
-      const isPathDownloads = r.path.toLowerCase().includes("downloads");
-      switch (activeCategory) {
-        case "Music":
-          return ["mp3", "wav", "flac", "ogg", "m4a"].includes(ext);
-        case "Videos":
-          return ["mp4", "mkv", "avi", "mov", "webm"].includes(ext);
-        case "Programs":
-          return ["exe", "msi", "bat", "cmd", "app", "sh"].includes(ext);
-        case "Downloads":
-          return isPathDownloads;
-        default:
-          return true;
+      // Category filter
+      if (activeCategory !== "All") {
+        const ext = r.path.split(".").pop()?.toLowerCase() || "";
+        const isPathDownloads = r.path.toLowerCase().includes("downloads");
+        let categoryMatch = false;
+        switch (activeCategory) {
+          case "Music":
+            categoryMatch = ["mp3", "wav", "flac", "ogg", "m4a"].includes(ext);
+            break;
+          case "Videos":
+            categoryMatch = ["mp4", "mkv", "avi", "mov", "webm"].includes(ext);
+            break;
+          case "Programs":
+            categoryMatch = ["exe", "msi", "bat", "cmd", "app", "sh"].includes(
+              ext,
+            );
+            break;
+          case "Downloads":
+            categoryMatch = isPathDownloads;
+            break;
+          default:
+            categoryMatch = true;
+        }
+        if (!categoryMatch) return false;
       }
+
+      // Size filter
+      if (activeSizeFilter !== "Any Size") {
+        const sizeInMB = r.size / (1024 * 1024);
+        switch (activeSizeFilter) {
+          case "Small (< 1MB)":
+            if (sizeInMB >= 1) return false;
+            break;
+          case "Medium (1-100MB)":
+            if (sizeInMB < 1 || sizeInMB > 100) return false;
+            break;
+          case "Large (> 100MB)":
+            if (sizeInMB <= 100) return false;
+            break;
+        }
+      }
+
+      // Date filter
+      if (activeDateFilter !== "Any Time") {
+        const modifiedDate = new Date(r.modified * 1000);
+        const now = new Date();
+        switch (activeDateFilter) {
+          case "Today": {
+            const todayStart = new Date(
+              now.getFullYear(),
+              now.getMonth(),
+              now.getDate(),
+            );
+            if (modifiedDate < todayStart) return false;
+            break;
+          }
+          case "This Week": {
+            const weekStart = new Date(now);
+            weekStart.setDate(now.getDate() - now.getDay());
+            weekStart.setHours(0, 0, 0, 0);
+            if (modifiedDate < weekStart) return false;
+            break;
+          }
+          case "This Month": {
+            const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+            if (modifiedDate < monthStart) return false;
+            break;
+          }
+        }
+      }
+
+      return true;
     });
   };
 
