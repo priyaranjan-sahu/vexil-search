@@ -3,6 +3,9 @@ import { persist } from "zustand/middleware";
 import { invoke } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
 
+let searchSeq = 0;
+let searchTimer: number | undefined;
+
 export interface SearchResult {
   id: number;
   title: string;
@@ -62,13 +65,16 @@ interface SearchState {
   setShowSettings: (show: boolean) => void;
   setShowAbout: (show: boolean) => void;
   setActiveMenu: (menu: string | null) => void;
-  openResult: (result: SearchResult) => void;
+  openResult: (result: SearchResult | string) => void;
   openInExplorer: (path: string) => void;
+  runSearch: (query: string, immediate?: boolean) => Promise<void>;
+  handleCopyPath: () => void;
+  handleDelete: () => Promise<void>;
 }
 
 export const useSearchStore = create<SearchState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       query: "",
       results: [],
       isSearching: false,
@@ -135,25 +141,82 @@ export const useSearchStore = create<SearchState>()(
       setShortcut: (shortcut) => set({ shortcut }),
       setShowSettings: (showSettings) => set({ showSettings }),
       setShowAbout: (showAbout) => set({ showAbout }),
-      openResult: async (result) => {
+      openResult: async (item) => {
+        const path = typeof item === "string" ? item : item.path;
         try {
-          await openPath(result.path);
+          await openPath(path);
         } catch (e) {
           console.error("openPath failed", e);
-          await invoke("open_in_explorer", { path: result.path }).catch(
-            console.error,
-          );
+          try {
+            await invoke("open_in_explorer", { path });
+          } catch (explorerError) {
+            console.error("open_in_explorer failed", explorerError);
+            alert(`Could not open: ${path}`);
+          }
         }
-        set((state) => ({
-          selectedResult: result,
-          recentItems: [
-            result,
-            ...state.recentItems.filter((r) => r.id !== result.id),
-          ].slice(0, 5),
-        }));
+        if (typeof item !== "string") {
+          set((state) => ({
+            selectedResult: item,
+            recentItems: [
+              item,
+              ...state.recentItems.filter((r) => r.id !== item.id),
+            ].slice(0, 5),
+          }));
+        }
       },
       openInExplorer: async (path) => {
         await invoke("open_in_explorer", { path }).catch(console.error);
+      },
+      runSearch: async (query, immediate = false) => {
+        const seq = ++searchSeq;
+        if (searchTimer !== undefined) {
+          window.clearTimeout(searchTimer);
+          searchTimer = undefined;
+        }
+        if (!query.trim()) {
+          set({ results: [], isSearching: false });
+          return;
+        }
+        set({ isSearching: true });
+        const run = async () => {
+          try {
+            const results = await invoke<SearchResult[]>("search_files", {
+              query,
+            });
+            if (searchSeq !== seq) return;
+            set({ results, isSearching: false });
+          } catch (error) {
+            if (searchSeq !== seq) return;
+            console.error("Failed to search files:", error);
+            set({ isSearching: false });
+          }
+        };
+        if (immediate) {
+          await run();
+        } else {
+          searchTimer = window.setTimeout(run, 250);
+        }
+      },
+      handleCopyPath: () => {
+        const selected = get().selectedResult;
+        if (selected && navigator.clipboard) {
+          navigator.clipboard.writeText(selected.path).catch(console.error);
+        }
+      },
+      handleDelete: async () => {
+        const selected = get().selectedResult;
+        if (!selected) return;
+        try {
+          await invoke("delete_file", { path: selected.path });
+          set((state) => ({
+            results: state.results.filter((r) => r.id !== selected.id),
+            myPicks: state.myPicks.filter((p) => p.id !== selected.id),
+            recentItems: state.recentItems.filter((r) => r.id !== selected.id),
+            selectedResult: null,
+          }));
+        } catch (error) {
+          console.error("Failed to delete file:", error);
+        }
       },
     }),
     {

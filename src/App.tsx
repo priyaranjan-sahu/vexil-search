@@ -3,7 +3,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
-import { openPath } from "@tauri-apps/plugin-opener";
 import "./App.css";
 
 import { DirectoryTree } from "./components/DirectoryTree";
@@ -15,8 +14,8 @@ function App() {
     query: searchQuery,
     setQuery: setSearchQuery,
     results,
-    setResults,
-    setIsSearching,
+    runSearch,
+    openResult,
     indexingProgress,
     setIndexingProgress,
     activeCategory,
@@ -47,7 +46,8 @@ function App() {
     setShowSettings,
     showAbout,
     setShowAbout,
-    openInExplorer,
+    handleCopyPath,
+    handleDelete,
   } = useSearchStore();
 
   const [contextMenu, setContextMenu] = useState<{
@@ -78,7 +78,6 @@ function App() {
     if (theme !== "system") {
       root.classList.add(theme);
     }
-    localStorage.setItem("vexil-theme", theme);
   }, [theme]);
 
   const triggerIndexing = useCallback(async () => {
@@ -170,7 +169,6 @@ function App() {
           }
         });
         shortcutRegisteredRef.current = true;
-        localStorage.setItem("vexil-shortcut", shortcut);
       } catch (error: unknown) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
@@ -189,38 +187,9 @@ function App() {
     };
   }, [shortcut]);
 
-  const runSearch = useCallback(
-    async (query: string, signal?: AbortSignal) => {
-      if (!query.trim()) {
-        setResults([]);
-        return;
-      }
-      setIsSearching(true);
-      try {
-        const res: SearchResult[] = await invoke("search_files", { query });
-        if (signal?.aborted) return;
-        setResults(res);
-      } catch (error) {
-        if (signal?.aborted) return;
-        console.error("Failed to search files:", error);
-      } finally {
-        if (!signal?.aborted) {
-          setIsSearching(false);
-        }
-      }
-    },
-    [setIsSearching, setResults],
-  );
-
-  // Live search, debounced while typing
-  const abortRef = useRef<AbortController | null>(null);
+  // Live search, debounced while typing (debounce lives in the store action)
   useEffect(() => {
-    abortRef.current?.abort();
-    abortRef.current = new AbortController();
-    const handle = setTimeout(() => {
-      runSearch(searchQuery, abortRef.current?.signal);
-    }, 250);
-    return () => clearTimeout(handle);
+    runSearch(searchQuery);
   }, [searchQuery, runSearch]);
 
   // Escape clears the query / closes settings/about
@@ -242,20 +211,7 @@ function App() {
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    runSearch(searchQuery);
-  };
-
-  const openResult = async (item: SearchResult | string) => {
-    if (typeof item === "string") {
-      try {
-        await openPath(item);
-      } catch (error) {
-        console.error("Failed to open file:", error);
-        openInExplorer(item);
-      }
-    } else {
-      useSearchStore.getState().openResult(item);
-    }
+    runSearch(searchQuery, true);
   };
 
   const saveShortcut = (e: React.FormEvent) => {
@@ -263,22 +219,6 @@ function App() {
     if (tempShortcut.trim()) {
       setShortcut(tempShortcut.trim());
       setTempShortcut("");
-    }
-  };
-
-  const handleDelete = async () => {
-    if (!selectedResult) return;
-    try {
-      await invoke("delete_file", { path: selectedResult.path });
-      setResults(results.filter((r) => r.id !== selectedResult.id));
-    } catch (error) {
-      console.error("Failed to delete file:", error);
-    }
-  };
-
-  const handleCopyPath = () => {
-    if (selectedResult && navigator.clipboard) {
-      navigator.clipboard.writeText(selectedResult.path);
     }
   };
 
@@ -618,7 +558,7 @@ function App() {
             <button
               className="tool-btn"
               disabled={!selectedResult}
-              onClick={() => selectedResult && openResult(selectedResult.path)}
+              onClick={() => selectedResult && openResult(selectedResult)}
             >
               <svg
                 viewBox="0 0 24 24"
@@ -670,7 +610,8 @@ function App() {
 
       {/* Info Bar */}
       <div className="info-bar">
-        {filteredResults.length} items found. Showing {activeCategory}
+        {filteredResults.length} items found
+        {activeCategory !== "All" && <> · Showing {activeCategory}</>}
         {indexingProgress !== null && (
           <span
             style={{

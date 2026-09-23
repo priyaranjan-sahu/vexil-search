@@ -25,7 +25,7 @@ export const ResultsTable = ({
   const virtualizer = useVirtualizer({
     count: filteredResults.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => 40, // 40px row height
+    estimateSize: () => 48, // rows are ~40px; slight over-estimate avoids scroll jitter
     overscan: 5,
   });
 
