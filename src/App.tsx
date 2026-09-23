@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -6,66 +6,53 @@ import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import { openPath } from "@tauri-apps/plugin-opener";
 import "./App.css";
 
-interface SearchResult {
-  id: number;
-  title: string;
-  snippet: string;
-  path: string;
-  relevance: number;
-  size: number;
-  modified: number;
-}
-
-type Theme = "system" | "light" | "dark";
-
 import { DirectoryTree } from "./components/DirectoryTree";
 import { ResultsTable } from "./components/ResultsTable";
-import { useSearchStore } from "./store/searchStore";
+import { useSearchStore, SearchResult, Theme } from "./store/searchStore";
 
 function App() {
-  const [searchQuery, setSearchQuery] = useState("");
-  const [results, setResults] = useState<SearchResult[]>([]);
-  const setIsSearching = useSearchStore((state) => state.setIsSearching);
-  const [indexingProgress, setIndexingProgress] = useState<number | null>(null);
+  const {
+    query: searchQuery,
+    setQuery: setSearchQuery,
+    results,
+    setResults,
+    setIsSearching,
+    indexingProgress,
+    setIndexingProgress,
+    activeCategory,
+    setActiveCategory,
+    activeSizeFilter,
+    setActiveSizeFilter,
+    activeDateFilter,
+    setActiveDateFilter,
+    activeMenu,
+    setActiveMenu,
+    selectedResult,
+    setSelectedResult,
+    radarToast,
+    setRadarToast,
+    myPicks,
+    addMyPick,
+    removeMyPick,
+    recentItems,
+    customDirs,
+    excludedDirs,
+    theme,
+    setTheme,
+    shortcut,
+    setShortcut,
+    showSettings,
+    setShowSettings,
+    showAbout,
+    setShowAbout,
+    openInExplorer,
+  } = useSearchStore();
 
-  const [activeCategory, setActiveCategory] = useState<string>("All");
-  const [activeSizeFilter, setActiveSizeFilter] = useState<string>("Any Size");
-  const [activeDateFilter, setActiveDateFilter] = useState<string>("Any Time");
-  const [activeMenu, setActiveMenu] = useState<string | null>(null);
-
-  // Ava Find Features (Renamed to avoid copy)
-  const [selectedResult, setSelectedResult] = useState<SearchResult | null>(
-    null,
-  );
-  const [radarToast, setRadarToast] = useState<string | null>(null);
-
-  const [myPicks, setMyPicks] = useState<SearchResult[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem("vexil-picks") || "[]");
-    } catch {
-      return [];
-    }
-  });
-  const [recentItems, setRecentItems] = useState<SearchResult[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem("vexil-recent") || "[]");
-    } catch {
-      return [];
-    }
-  });
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
     result: SearchResult;
   } | null>(null);
-
-  useEffect(() => {
-    localStorage.setItem("vexil-picks", JSON.stringify(myPicks));
-  }, [myPicks]);
-
-  useEffect(() => {
-    localStorage.setItem("vexil-recent", JSON.stringify(recentItems));
-  }, [recentItems]);
 
   // Close context menu on click anywhere
   useEffect(() => {
@@ -75,17 +62,6 @@ function App() {
   }, []);
 
   // Settings & Theme
-  const [showSettings, setShowSettings] = useState(false);
-  const [showAbout, setShowAbout] = useState(false);
-  const [theme, setTheme] = useState<Theme>(
-    () => (localStorage.getItem("vexil-theme") as Theme) || "system",
-  );
-
-  // Shortcut state
-  const [shortcut, setShortcut] = useState(
-    () =>
-      localStorage.getItem("vexil-shortcut") || "CommandOrControl+Shift+Space",
-  );
   const [tempShortcut, setTempShortcut] = useState("");
   // Track shortcut registration to avoid double-registration in StrictMode
   const shortcutRegisteredRef = useRef(false);
@@ -102,35 +78,13 @@ function App() {
     localStorage.setItem("vexil-theme", theme);
   }, [theme]);
 
-  const [customDirs] = useState<string[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem("vexil-custom-dirs") || "[]");
-    } catch {
-      return [];
-    }
-  });
-
-  const [excludedDirs] = useState<string[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem("vexil-excluded-dirs") || "[]");
-    } catch {
-      return [];
-    }
-  });
-
-  useEffect(() => {
-    localStorage.setItem("vexil-custom-dirs", JSON.stringify(customDirs));
-  }, [customDirs]);
-
-  useEffect(() => {
-    localStorage.setItem("vexil-excluded-dirs", JSON.stringify(excludedDirs));
-  }, [excludedDirs]);
-
   const triggerIndexing = useCallback(async () => {
     try {
+      setIndexingProgress(0);
       await invoke("start_indexing", { customDirs, excludedDirs });
     } catch (error) {
       alert(error);
+      setIndexingProgress(null);
     }
   }, [customDirs, excludedDirs]);
 
@@ -221,7 +175,7 @@ function App() {
   }, [shortcut]);
 
   const runSearch = useCallback(
-    async (query: string) => {
+    async (query: string, signal?: AbortSignal) => {
       if (!query.trim()) {
         setResults([]);
         return;
@@ -229,21 +183,27 @@ function App() {
       setIsSearching(true);
       try {
         const res: SearchResult[] = await invoke("search_files", { query });
+        if (signal?.aborted) return;
         setResults(res);
-        setSelectedResult(null);
       } catch (error) {
+        if (signal?.aborted) return;
         console.error("Failed to search files:", error);
       } finally {
-        setIsSearching(false);
+        if (!signal?.aborted) {
+          setIsSearching(false);
+        }
       }
     },
-    [setIsSearching],
+    [setIsSearching, setResults],
   );
 
   // Live search, debounced while typing
+  const abortRef = useRef<AbortController | null>(null);
   useEffect(() => {
+    abortRef.current?.abort();
+    abortRef.current = new AbortController();
     const handle = setTimeout(() => {
-      runSearch(searchQuery);
+      runSearch(searchQuery, abortRef.current?.signal);
     }, 250);
     return () => clearTimeout(handle);
   }, [searchQuery, runSearch]);
@@ -271,21 +231,15 @@ function App() {
   };
 
   const openResult = async (item: SearchResult | string) => {
-    try {
-      const path = typeof item === "string" ? item : item.path;
-      await openPath(path);
-
-      if (typeof item !== "string") {
-        setRecentItems((prev) => {
-          const next = [item, ...prev.filter((r) => r.id !== item.id)].slice(
-            0,
-            5,
-          );
-          return next;
-        });
+    if (typeof item === "string") {
+      try {
+        await openPath(item);
+      } catch (error) {
+        console.error("Failed to open file:", error);
+        openInExplorer(item);
       }
-    } catch (error) {
-      console.error("Failed to open file:", error);
+    } else {
+      useSearchStore.getState().openResult(item);
     }
   };
 
@@ -301,8 +255,7 @@ function App() {
     if (!selectedResult) return;
     try {
       await invoke("delete_file", { path: selectedResult.path });
-      setResults((prev) => prev.filter((r) => r.id !== selectedResult.id));
-      setSelectedResult(null);
+      setResults(results.filter((r) => r.id !== selectedResult.id));
     } catch (error) {
       console.error("Failed to delete file:", error);
     }
@@ -314,7 +267,7 @@ function App() {
     }
   };
 
-  const getFilteredResults = () => {
+  const getFilteredResults = useCallback(() => {
     return results.filter((r) => {
       // Category filter
       if (activeCategory !== "All") {
@@ -389,9 +342,11 @@ function App() {
 
       return true;
     });
-  };
-
-  const filteredResults = getFilteredResults();
+  }, [results, activeCategory, activeSizeFilter, activeDateFilter]);
+  const filteredResults = useMemo(
+    () => getFilteredResults(),
+    [getFilteredResults],
+  );
 
   return (
     <div className="container">
@@ -747,10 +702,7 @@ function App() {
             <div className="sidebar-box-header">Live Radar</div>
             <div className="sidebar-box-content">
               {radarToast ? (
-                <div
-                  className="sidebar-item"
-                  onClick={() => openResult(radarToast)}
-                >
+                <div className="sidebar-item">
                   <svg
                     width="16"
                     height="16"
@@ -1001,12 +953,11 @@ function App() {
             className="menu-dropdown-item"
             onClick={() => {
               const res = contextMenu.result;
-              setMyPicks((prev) => {
-                if (prev.some((p) => p.id === res.id)) {
-                  return prev.filter((p) => p.id !== res.id);
-                }
-                return [...prev, res];
-              });
+              if (myPicks.some((p) => p.id === res.id)) {
+                removeMyPick(res.id);
+              } else {
+                addMyPick(res);
+              }
               setContextMenu(null);
             }}
           >

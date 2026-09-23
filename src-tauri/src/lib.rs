@@ -4,11 +4,11 @@ use notify::{Event, EventKind, RecursiveMode, Watcher};
 use rusqlite::params;
 use serde::Serialize;
 use std::fs;
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::mpsc::channel;
 use std::thread;
 use tauri::{AppHandle, Emitter, Manager};
-use walkdir::WalkDir;
 
 mod db;
 
@@ -73,29 +73,24 @@ fn start_indexing(
     let app_clone = app_handle.clone();
 
     thread::spawn(move || {
+        let start_time = std::time::Instant::now();
+        println!("Indexing thread started");
+        
         let done = |count: i64| {
             use tauri::Emitter;
             let _ = app_clone.emit("indexing-done", count);
             INDEXING.store(false, std::sync::atomic::Ordering::SeqCst);
+            println!("Indexing done in {:?}", start_time.elapsed());
         };
 
-        let conn = match open_db(&path) {
+        let mut conn = match open_db(&path) {
             Ok(c) => c,
             Err(_) => return done(0),
         };
+        println!("DB opened in {:?}", start_time.elapsed());
 
-        // Load existing files for incremental sync
-        let mut existing_files = std::collections::HashMap::new();
-        if let Ok(mut stmt) = conn.prepare("SELECT path, mtime FROM file_metadata") {
-            if let Ok(rows) = stmt.query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-            }) {
-                for row in rows.filter_map(|r| r.ok()) {
-                    existing_files.insert(row.0, row.1);
-                }
-            }
-        }
-        let mut seen_files = std::collections::HashSet::new();
+        // Removed existing_files memory bottleneck!
+        let sync_id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
 
         let mut dirs_to_scan = Vec::new();
         if let Some(doc_dir) = dirs::document_dir() {
@@ -119,105 +114,152 @@ fn start_indexing(
         let mut count: i64 = 0;
         const BATCH: usize = 500;
 
-        for base_dir in dirs_to_scan {
-            let walker = WalkDir::new(base_dir)
-                .into_iter()
-                .filter_entry(|e| {
-                    if exclusions.contains(e.path()) {
-                        return false;
-                    }
-                    !e.file_type().is_dir() || !is_junk_dir(&e.file_name().to_string_lossy())
-                })
-                .filter_map(|e| e.ok());
+        if dirs_to_scan.is_empty() {
+            return done(0);
+        }
 
-            let mut batch: Vec<(String, String, String, i64, i64)> = Vec::with_capacity(BATCH);
+        let mut builder = ignore::WalkBuilder::new(&dirs_to_scan[0]);
+        for dir in dirs_to_scan.iter().skip(1) {
+            builder.add(dir);
+        }
+        // Don't traverse hidden directories since we are looking for user documents mostly
+        builder.hidden(true);
+        builder.ignore(true);
+        builder.git_ignore(true);
 
-            for entry in walker {
-                if !entry.file_type().is_file() {
-                    continue;
-                }
-                let path_str = entry.path().to_string_lossy().to_string();
-                let title_str = entry.file_name().to_string_lossy().to_string();
+        let (tx, rx) = channel();
+        let exclusions_arc = std::sync::Arc::new(exclusions);
+        
+        println!("WalkBuilder initialized in {:?}", start_time.elapsed());
 
-                let metadata = entry.metadata().ok();
-                let mtime = metadata
-                    .as_ref()
-                    .and_then(|m| m.modified().ok())
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0);
-                let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+        // Spawn parallel walker
+        thread::spawn(move || {
+            builder.build_parallel().run(|| {
+                let tx = tx.clone();
+                let exclusions = exclusions_arc.clone();
+                Box::new(move |result| {
+                    if let Ok(entry) = result {
+                        if exclusions.contains(entry.path()) {
+                            return ignore::WalkState::Skip;
+                        }
+                        if let Some(file_type) = entry.file_type() {
+                            if file_type.is_dir() && is_junk_dir(&entry.file_name().to_string_lossy()) {
+                                return ignore::WalkState::Skip;
+                            }
+                            if file_type.is_file() {
+                                let path_str = entry.path().to_string_lossy().to_string();
+                                let title_str = entry.file_name().to_string_lossy().to_string();
 
-                seen_files.insert(path_str.clone());
+                                let metadata = entry.metadata().ok();
+                                let mtime = metadata
+                                    .as_ref()
+                                    .and_then(|m| m.modified().ok())
+                                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                    .map(|d| d.as_secs() as i64)
+                                    .unwrap_or(0);
+                                let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
 
-                if let Some(&old_mtime) = existing_files.get(&path_str) {
-                    if old_mtime == mtime {
-                        continue; // File unchanged
-                    }
-                    // Delete old record before updating
-                    let _ =
-                        conn.execute("DELETE FROM file_index WHERE path = ?1", params![&path_str]);
-                }
+                                let mut text_content = String::new();
+                                if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
+                                    if ["txt", "md", "csv", "json", "rs", "ts", "tsx", "js", "jsx"].contains(&ext) {
+                                        if let Ok(mut file) = fs::File::open(entry.path()) {
+                                            // Read up to 2000 bytes without allocating the whole file
+                                            let mut buffer = vec![0; 2000];
+                                            if let Ok(bytes_read) = file.read(&mut buffer) {
+                                                buffer.truncate(bytes_read);
+                                                text_content = String::from_utf8_lossy(&buffer).into_owned();
+                                            }
+                                        }
+                                    }
+                                }
 
-                let mut text_content = String::new();
-                if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
-                    if ["txt", "md", "csv", "json", "rs", "ts", "tsx", "js", "jsx"].contains(&ext) {
-                        if let Ok(content) = std::fs::read_to_string(entry.path()) {
-                            text_content = content.chars().take(2000).collect();
+                                let content_str = format!("{} {} {}", title_str, path_str, text_content);
+                                let _ = tx.send((title_str, path_str, content_str, mtime, size as i64));
+                            }
                         }
                     }
-                }
+                    ignore::WalkState::Continue
+                })
+            });
+        }); // tx is dropped here when parallel walker finishes
 
-                let content_str = format!("{} {} {}", title_str, path_str, text_content);
+        let mut batch_insert: Vec<(String, String, String, i64, i64)> = Vec::with_capacity(BATCH);
+        let mut batch_sync: Vec<String> = Vec::with_capacity(BATCH);
 
-                batch.push((title_str, path_str, content_str, mtime, size as i64));
-
-                if batch.len() >= BATCH {
-                    let _ = conn.execute_batch("BEGIN");
-                    for (t, p, c, m, s) in batch.drain(..) {
-                        let _ = conn.execute(
-                            "INSERT INTO file_index (title, path, content) VALUES (?1, ?2, ?3)",
-                            params![t, p, c],
-                        );
-                        let _ = conn.execute(
-                            "INSERT OR REPLACE INTO file_metadata (path, mtime, size) VALUES (?1, ?2, ?3)",
-                            params![p, m, s],
-                        );
+        let process_batches = |conn: &mut rusqlite::Connection, b_insert: &mut Vec<(String, String, String, i64, i64)>, b_sync: &mut Vec<String>| {
+            if b_insert.is_empty() && b_sync.is_empty() { return; }
+            let _ = conn.execute_batch("BEGIN");
+            {
+                if !b_insert.is_empty() {
+                    let mut stmt_idx = conn.prepare_cached("INSERT INTO file_index (title, path, content) VALUES (?1, ?2, ?3)").unwrap();
+                    let mut stmt_meta = conn.prepare_cached("INSERT OR REPLACE INTO file_metadata (path, mtime, size, sync_id) VALUES (?1, ?2, ?3, ?4)").unwrap();
+                    for (t, p, c, m, s) in b_insert.drain(..) {
+                        let _ = stmt_idx.execute(params![t, p, c]);
+                        let _ = stmt_meta.execute(params![p, m, s, sync_id]);
                     }
-                    let _ = conn.execute_batch("COMMIT");
                 }
+                if !b_sync.is_empty() {
+                    let mut stmt_update = conn.prepare_cached("UPDATE file_metadata SET sync_id = ?1 WHERE path = ?2").unwrap();
+                    for p in b_sync.drain(..) {
+                        let _ = stmt_update.execute(params![sync_id, p]);
+                    }
+                }
+            }
+            let _ = conn.execute_batch("COMMIT");
+        };
 
-                count += 1;
-                if count % 100 == 0 {
-                    let _ = app_clone.emit("indexing-progress", count);
+        let mut check_mtime = conn.prepare_cached("SELECT mtime FROM file_metadata WHERE path = ?1").unwrap();
+        let mut delete_idx = conn.prepare_cached("DELETE FROM file_index WHERE path = ?1").unwrap();
+
+        let mut first_file = true;
+
+        while let Ok((t, p, c, m, s)) = rx.recv() {
+            if first_file {
+                println!("First file received from channel in {:?}", start_time.elapsed());
+                first_file = false;
+            }
+
+            let mut skip_insert = false;
+            if let Ok(old_mtime) = check_mtime.query_row(params![&p], |row| row.get::<_, i64>(0)) {
+                if old_mtime == m {
+                    skip_insert = true;
+                } else {
+                    let _ = delete_idx.execute(params![&p]);
                 }
             }
 
-            // flush remainder
-            if !batch.is_empty() {
-                let _ = conn.execute_batch("BEGIN");
-                for (t, p, c, m, s) in batch {
-                    let _ = conn.execute(
-                        "INSERT INTO file_index (title, path, content) VALUES (?1, ?2, ?3)",
-                        params![t, p, c],
-                    );
-                    let _ = conn.execute(
-                        "INSERT OR REPLACE INTO file_metadata (path, mtime, size) VALUES (?1, ?2, ?3)",
-                        params![p, m, s],
-                    );
-                }
-                let _ = conn.execute_batch("COMMIT");
+            if skip_insert {
+                batch_sync.push(p);
+            } else {
+                batch_insert.push((t, p, c, m, s));
+            }
+
+            if batch_insert.len() >= BATCH || batch_sync.len() >= BATCH {
+                drop(check_mtime); // MUST drop prepared statements before processing batch due to connection mutability
+                drop(delete_idx);
+                process_batches(&mut conn, &mut batch_insert, &mut batch_sync);
+                check_mtime = conn.prepare_cached("SELECT mtime FROM file_metadata WHERE path = ?1").unwrap();
+                delete_idx = conn.prepare_cached("DELETE FROM file_index WHERE path = ?1").unwrap();
+            }
+
+            count += 1;
+            if count % 100 == 0 {
+                let _ = app_clone.emit("indexing-progress", count);
             }
         }
+        drop(check_mtime);
+        drop(delete_idx);
+        
+        // flush remainder
+        process_batches(&mut conn, &mut batch_insert, &mut batch_sync);
 
         // Stale file cleanup
         let _ = conn.execute_batch("BEGIN");
-        for (path, _) in existing_files {
-            if !seen_files.contains(&path) {
-                let _ = conn.execute("DELETE FROM file_index WHERE path = ?1", params![&path]);
-                let _ = conn.execute("DELETE FROM file_metadata WHERE path = ?1", params![&path]);
-            }
-        }
+        let _ = conn.execute(
+            "DELETE FROM file_index WHERE path IN (SELECT path FROM file_metadata WHERE sync_id != ?1)",
+            params![sync_id],
+        );
+        let _ = conn.execute("DELETE FROM file_metadata WHERE sync_id != ?1", params![sync_id]);
         let _ = conn.execute_batch("COMMIT");
 
         done(count);
@@ -237,6 +279,7 @@ fn search_files(app_handle: AppHandle, query: String) -> Result<Vec<SearchResult
 
     let is_regex = query.starts_with('/') && query.ends_with('/') && query.len() > 2;
     let mut final_results = Vec::new();
+    println!("search_files called with query: '{}'", query);
 
     if is_regex {
         let regex_pattern = &query[1..query.len() - 1];
@@ -268,17 +311,20 @@ fn search_files(app_handle: AppHandle, query: String) -> Result<Vec<SearchResult
         for res in results {
             if let Ok(r) = res {
                 final_results.push(r);
+            } else if let Err(e) = res {
+                println!("Regex query row error: {}", e);
             }
         }
+        println!("Regex returning {} results", final_results.len());
     } else {
         let sql = "
-            SELECT f.rowid, f.title, f.path,
-                   snippet(f, 0, '<b>', '</b>', '...', 10),
-                   bm25(f),
+            SELECT file_index.rowid, file_index.title, file_index.path,
+                   snippet(file_index, 0, '<b>', '</b>', '...', 10),
+                   bm25(file_index),
                    m.size, m.mtime
-            FROM file_index f
-            LEFT JOIN file_metadata m ON f.path = m.path
-            WHERE f MATCH ?
+            FROM file_index
+            LEFT JOIN file_metadata m ON file_index.path = m.path
+            WHERE file_index MATCH ?
             ORDER BY rank
             LIMIT 20
         ";
@@ -315,13 +361,19 @@ fn search_files(app_handle: AppHandle, query: String) -> Result<Vec<SearchResult
                     modified: row.get::<_, i64>(6).unwrap_or(0),
                 })
             })
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| {
+                println!("FTS query_map error: {}", e);
+                e.to_string()
+            })?;
 
         for res in results {
             if let Ok(r) = res {
                 final_results.push(r);
+            } else if let Err(e) = res {
+                println!("FTS query row error: {}", e);
             }
         }
+        println!("FTS returning {} results", final_results.len());
     }
 
     Ok(final_results)
@@ -400,6 +452,12 @@ fn delete_file(app_handle: AppHandle, path: String) -> Result<String, String> {
         }
         Err(e) => Err(e.to_string()),
     }
+}
+
+#[tauri::command]
+fn open_in_explorer(path: String) -> Result<String, String> {
+    opener::reveal(&path).map_err(|e| e.to_string())?;
+    Ok("Opened".to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -488,7 +546,14 @@ pub fn run() {
                             for path in pending_paths.drain() {
                                 if path.is_file() {
                                     let path_str = path.to_string_lossy().to_string();
-                                    if is_junk_dir(&path_str) {
+                                    let is_junk = path.components().any(|c| {
+                                        if let std::path::Component::Normal(name) = c {
+                                            is_junk_dir(&name.to_string_lossy())
+                                        } else {
+                                            false
+                                        }
+                                    });
+                                    if is_junk {
                                         continue;
                                     }
                                     let title_str = path.file_name().unwrap_or_default().to_string_lossy().to_string();
@@ -505,6 +570,7 @@ pub fn run() {
                                 let _ = app_handle.emit("live-radar-batch", processed_paths);
                             }
                         } else {
+                            thread::sleep(std::time::Duration::from_millis(100)); // backoff
                             pending_paths.clear(); // Clear to avoid infinite loop on DB error
                         }
                     }
@@ -518,7 +584,8 @@ pub fn run() {
             search_files,
             delete_file,
             get_system_drives,
-            get_directories
+            get_directories,
+            open_in_explorer
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

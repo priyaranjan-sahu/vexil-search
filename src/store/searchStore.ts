@@ -49,16 +49,15 @@ interface SearchState {
   removeMyPick: (id: number) => void;
   addRecentItem: (item: SearchResult) => void;
   setRadarToast: (toast: string | null) => void;
-  setCustomDirs: (dirs: string[]) => void;
-  setExcludedDirs: (dirs: string[]) => void;
+  setCustomDirs: (dirs: string[] | ((prev: string[]) => string[])) => void;
+  setExcludedDirs: (dirs: string[] | ((prev: string[]) => string[])) => void;
   setTheme: (theme: "system" | "light" | "dark") => void;
   setShortcut: (shortcut: string) => void;
   setShowSettings: (show: boolean) => void;
   setShowAbout: (show: boolean) => void;
   setActiveMenu: (menu: string | null) => void;
   openResult: (result: SearchResult) => void;
-  handleCopyPath: () => void;
-  handleDelete: () => void;
+  openInExplorer: (path: string) => void;
 }
 
 export const useSearchStore = create<SearchState>()(
@@ -110,15 +109,47 @@ export const useSearchStore = create<SearchState>()(
           ].slice(0, 5),
         })),
       setRadarToast: (radarToast) => set({ radarToast }),
-      setCustomDirs: (customDirs) => set({ customDirs }),
-      setExcludedDirs: (excludedDirs) => set({ excludedDirs }),
+      setCustomDirs: (customDirs) =>
+        set((state) => ({
+          customDirs:
+            typeof customDirs === "function"
+              ? customDirs(state.customDirs)
+              : customDirs,
+        })),
+      setExcludedDirs: (excludedDirs) =>
+        set((state) => ({
+          excludedDirs:
+            typeof excludedDirs === "function"
+              ? excludedDirs(state.excludedDirs)
+              : excludedDirs,
+        })),
       setTheme: (theme) => set({ theme }),
       setShortcut: (shortcut) => set({ shortcut }),
       setShowSettings: (showSettings) => set({ showSettings }),
       setShowAbout: (showAbout) => set({ showAbout }),
-      openResult: (result) => set({ selectedResult: result }),
-      handleCopyPath: () => set({}), // No state change needed
-      handleDelete: () => set({}), // No state change needed
+      openResult: async (result) => {
+        try {
+          const { openPath } = await import("@tauri-apps/plugin-opener");
+          await openPath(result.path);
+        } catch (e) {
+          console.error("openPath failed", e);
+          const { invoke } = await import("@tauri-apps/api/core");
+          await invoke("open_in_explorer", { path: result.path }).catch(
+            console.error,
+          );
+        }
+        set((state) => ({
+          selectedResult: result,
+          recentItems: [
+            result,
+            ...state.recentItems.filter((r) => r.id !== result.id),
+          ].slice(0, 5),
+        }));
+      },
+      openInExplorer: async (path) => {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("open_in_explorer", { path }).catch(console.error);
+      },
     }),
     {
       name: "vexil-storage",
@@ -133,3 +164,29 @@ export const useSearchStore = create<SearchState>()(
     },
   ),
 );
+
+if (typeof localStorage !== "undefined") {
+  const oldRecent = localStorage.getItem("vexil-recent");
+  const oldPicks = localStorage.getItem("vexil-picks");
+
+  if (oldRecent || oldPicks) {
+    try {
+      const recent = oldRecent ? JSON.parse(oldRecent) : [];
+      const picks = oldPicks ? JSON.parse(oldPicks) : [];
+
+      useSearchStore.setState((state) => ({
+        recentItems: [...recent, ...state.recentItems]
+          .filter((v, i, a) => a.findIndex((t) => t.id === v.id) === i)
+          .slice(0, 5),
+        myPicks: [...picks, ...state.myPicks].filter(
+          (v, i, a) => a.findIndex((t) => t.id === v.id) === i,
+        ),
+      }));
+
+      localStorage.removeItem("vexil-recent");
+      localStorage.removeItem("vexil-picks");
+    } catch (e) {
+      console.error("Failed to migrate old data", e);
+    }
+  }
+}

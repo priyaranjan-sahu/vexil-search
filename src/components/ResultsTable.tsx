@@ -1,7 +1,5 @@
 import { useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { invoke } from "@tauri-apps/api/core";
-import { openPath } from "@tauri-apps/plugin-opener";
 import { HighlightedSnippet } from "./HighlightedSnippet";
 import { useSearchStore, SearchResult } from "../store/searchStore";
 
@@ -31,14 +29,8 @@ export const ResultsTable = ({
     overscan: 5,
   });
 
-  const openResult = async (result: SearchResult) => {
-    try {
-      await openPath(result.path);
-    } catch (error) {
-      console.error(error);
-      invoke("open_in_explorer", { path: result.path }).catch(console.error);
-    }
-  };
+  const virtualItems = virtualizer.getVirtualItems();
+  const openResult = useSearchStore((state) => state.openResult);
 
   return (
     <div
@@ -74,20 +66,19 @@ export const ResultsTable = ({
                 </tr>
               </thead>
               <tbody>
-                {virtualizer.getVirtualItems().length > 0 &&
-                  virtualizer.getVirtualItems()[0].start > 0 && (
-                    <tr>
-                      <td
-                        style={{
-                          height: `${virtualizer.getVirtualItems()[0].start}px`,
-                          padding: 0,
-                          border: 0,
-                        }}
-                        colSpan={4}
-                      />
-                    </tr>
-                  )}
-                {virtualizer.getVirtualItems().map((virtualRow) => {
+                {virtualItems.length > 0 && virtualItems[0].start > 0 && (
+                  <tr>
+                    <td
+                      style={{
+                        height: `${virtualItems[0].start}px`,
+                        padding: 0,
+                        border: 0,
+                      }}
+                      colSpan={4}
+                    />
+                  </tr>
+                )}
+                {virtualItems.map((virtualRow) => {
                   const result = filteredResults[virtualRow.index];
                   return (
                     <tr
@@ -130,16 +121,14 @@ export const ResultsTable = ({
                     </tr>
                   );
                 })}
-                {virtualizer.getVirtualItems().length > 0 &&
+                {virtualItems.length > 0 &&
                   virtualizer.getTotalSize() -
-                    virtualizer.getVirtualItems()[
-                      virtualizer.getVirtualItems().length - 1
-                    ].end >
+                    virtualItems[virtualItems.length - 1].end >
                     0 && (
                     <tr>
                       <td
                         style={{
-                          height: `${virtualizer.getTotalSize() - virtualizer.getVirtualItems()[virtualizer.getVirtualItems().length - 1].end}px`,
+                          height: `${virtualizer.getTotalSize() - virtualItems[virtualItems.length - 1].end}px`,
                           padding: 0,
                           border: 0,
                         }}
