@@ -1,5 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { invoke } from "@tauri-apps/api/core";
+import { openPath } from "@tauri-apps/plugin-opener";
 
 export interface SearchResult {
   id: number;
@@ -15,6 +17,8 @@ export interface DirEntry {
   name: string;
   path: string;
 }
+
+export type Theme = "system" | "light" | "dark";
 
 interface SearchState {
   query: string;
@@ -129,11 +133,9 @@ export const useSearchStore = create<SearchState>()(
       setShowAbout: (showAbout) => set({ showAbout }),
       openResult: async (result) => {
         try {
-          const { openPath } = await import("@tauri-apps/plugin-opener");
           await openPath(result.path);
         } catch (e) {
           console.error("openPath failed", e);
-          const { invoke } = await import("@tauri-apps/api/core");
           await invoke("open_in_explorer", { path: result.path }).catch(
             console.error,
           );
@@ -147,7 +149,6 @@ export const useSearchStore = create<SearchState>()(
         }));
       },
       openInExplorer: async (path) => {
-        const { invoke } = await import("@tauri-apps/api/core");
         await invoke("open_in_explorer", { path }).catch(console.error);
       },
     }),
