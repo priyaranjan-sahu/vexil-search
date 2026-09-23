@@ -165,7 +165,12 @@ export const useSearchStore = create<SearchState>()(
         }
       },
       openInExplorer: async (path) => {
-        await invoke("open_in_explorer", { path }).catch(console.error);
+        try {
+          await invoke("open_in_explorer", { path });
+        } catch (error) {
+          console.error("Failed to reveal in explorer:", error);
+          alert(`Could not reveal: ${path}`);
+        }
       },
       runSearch: async (query, immediate = false) => {
         const seq = ++searchSeq;

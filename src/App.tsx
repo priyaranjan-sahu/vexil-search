@@ -672,13 +672,6 @@ function App() {
         )}
       </div>
 
-      {/* Dynamic Scan Progress Bar */}
-      {indexingProgress !== null && (
-        <div className="progress-bar-container">
-          <div className="progress-bar-fill"></div>
-        </div>
-      )}
-
       {/* 3. Main Content Grid */}
       <div className="main-content">
         {/* Results Panel (Left Side Now) */}

@@ -54,18 +54,23 @@
 .search-wrapper {
   display: flex;
   align-items: center;
-  background-color: var(--input-bg);
+  background: var(--input-bg);
   border: 1px solid var(--input-border);
   border-radius: 8px;
-  padding: 12px 16px;
-  width: 100%;
+  padding: 0 12px;
+  flex: 1;
+  max-width: 360px;
+  height: 34px;
+  min-width: 50px;
   transition: all 0.2s ease;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.02);
 }
 
 .search-wrapper:focus-within {
   border-color: var(--brand-primary);
-  box-shadow: 0 0 0 3px rgba(0, 120, 212, 0.15);
-  background-color: var(--surface-color);
+  box-shadow:
+    0 0 0 3px rgba(0, 120, 212, 0.15),
+    inset 0 1px 2px rgba(0, 0, 0, 0.02);
 }
 
 .search-icon {
@@ -258,56 +263,6 @@
   cursor: default;
 }
 
-/* Modern Search Box */
-.search-wrapper {
-  display: flex;
-  align-items: center;
-  background: var(--input-bg);
-  border: 1px solid var(--input-border);
-  border-radius: 8px;
-  padding: 0 12px;
-  flex: 1;
-  max-width: 360px;
-  height: 34px;
-  min-width: 50px;
-  transition: all 0.2s ease;
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.02);
-}
-
-.search-wrapper:focus-within {
-  border-color: var(--brand-primary);
-  box-shadow:
-    0 0 0 3px rgba(0, 120, 212, 0.15),
-    inset 0 1px 2px rgba(0, 0, 0, 0.02);
-}
-
-.search-wrapper svg {
-  width: 14px;
-  height: 14px;
-  color: var(--text-muted);
-  margin-right: 8px;
-  flex-shrink: 0;
-  transition: color 0.2s ease;
-}
-
-.search-wrapper:focus-within svg {
-  color: var(--brand-primary);
-}
-
-.search-wrapper input {
-  flex: 1;
-  background: transparent;
-  border: none;
-  outline: none;
-  color: var(--text-primary);
-  font-size: 0.8125rem;
-  min-width: 0;
-}
-
-.search-wrapper input::placeholder {
-  color: var(--text-muted);
-}
-
 /* Soft Info Bar */
 .info-bar {
   display: flex;
@@ -325,39 +280,6 @@
 
 .dark .info-bar {
   background-color: #242424;
-}
-
-/* Linear Progress Bar */
-.progress-bar-container {
-  width: 100%;
-  height: 2px;
-  background-color: var(--surface-border);
-  overflow: hidden;
-  position: relative;
-  flex-shrink: 0;
-}
-
-.progress-bar-fill {
-  height: 100%;
-  background-color: var(--brand-primary);
-  width: 30%;
-  position: absolute;
-  animation: progress-indeterminate 1.5s infinite ease-in-out;
-}
-
-@keyframes progress-indeterminate {
-  0% {
-    left: -30%;
-    width: 30%;
-  }
-  50% {
-    left: 50%;
-    width: 50%;
-  }
-  100% {
-    left: 100%;
-    width: 30%;
-  }
 }
 
 /* 3. Main Content Split */
