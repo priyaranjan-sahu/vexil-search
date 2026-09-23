@@ -14,7 +14,7 @@ mod db;
 
 use db::{db_path, open_db, setup_db, SearchResult};
 
-static INDEXING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static INDEX_GEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 // Directories that are never worth indexing
 fn is_junk_dir(name: &str) -> bool {
@@ -24,33 +24,40 @@ fn is_junk_dir(name: &str) -> bool {
     )
 }
 
+fn get_category(is_dir: bool, ext: &str) -> String {
+    if is_dir {
+        return "Folder".to_string();
+    }
+    match ext.to_lowercase().as_str() {
+        "mp3" | "wav" | "flac" | "ogg" | "m4a" => "Music".to_string(),
+        "mp4" | "mkv" | "avi" | "mov" | "webm" => "Videos".to_string(),
+        "png" | "jpg" | "jpeg" | "svg" | "gif" | "webp" => "Images".to_string(),
+        "pdf" | "docx" | "doc" | "txt" | "rtf" => "Documents".to_string(),
+        "exe" | "msi" | "bat" | "cmd" | "app" | "sh" => "Programs".to_string(),
+        "zip" | "tar" | "gz" | "rar" | "7z" => "Archives".to_string(),
+        "rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "html" | "css" | "json" | "toml" | "yml" => "Code".to_string(),
+        _ => "Other".to_string(),
+    }
+}
+
 #[tauri::command]
 fn start_indexing(
     app_handle: AppHandle,
     custom_dirs: Option<Vec<String>>,
     excluded_dirs: Option<Vec<String>>,
 ) -> Result<String, String> {
-    // Skip if an index run is already in progress (also guards React StrictMode double-invoke)
-    if INDEXING.load(std::sync::atomic::Ordering::SeqCst) {
-        return Ok("Indexing already in progress".to_string());
-    }
-    INDEXING.store(true, std::sync::atomic::Ordering::SeqCst);
+    // Increment generation to cancel any running indexer
+    let current_gen = INDEX_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
 
     let pool = app_handle.state::<db::DbPool>();
     let path = {
         let conn = match pool.get() {
             Ok(c) => c,
-            Err(_) => {
-                INDEXING.store(false, std::sync::atomic::Ordering::SeqCst);
-                return Err("DB lock failed".to_string());
-            }
+            Err(_) => return Err("DB lock failed".to_string()),
         };
         match conn.query_row("PRAGMA database_list", [], |row| row.get::<_, String>(2)) {
             Ok(file) => PathBuf::from(file),
-            Err(_) => {
-                INDEXING.store(false, std::sync::atomic::Ordering::SeqCst);
-                return Err("Failed to locate database".to_string());
-            }
+            Err(_) => return Err("Failed to locate database".to_string()),
         }
     };
 
@@ -65,7 +72,6 @@ fn start_indexing(
             }
         }
         if !errors.is_empty() {
-            INDEXING.store(false, std::sync::atomic::Ordering::SeqCst);
             return Err(format!("Invalid directories: {}", errors.join(", ")));
         }
     }
@@ -79,7 +85,6 @@ fn start_indexing(
         let done = |count: i64| {
             use tauri::Emitter;
             let _ = app_clone.emit("indexing-done", count);
-            INDEXING.store(false, std::sync::atomic::Ordering::SeqCst);
             println!("Indexing done in {:?}", start_time.elapsed());
         };
 
@@ -141,52 +146,56 @@ fn start_indexing(
                 let tx = tx.clone();
                 let exclusions = exclusions_arc.clone();
                 Box::new(move |result| {
+                    if INDEX_GEN.load(std::sync::atomic::Ordering::SeqCst) != current_gen {
+                        return ignore::WalkState::Quit;
+                    }
                     if let Ok(entry) = result {
                         if exclusions.contains(entry.path()) {
                             return ignore::WalkState::Skip;
                         }
                         if let Some(file_type) = entry.file_type() {
-                            if file_type.is_dir()
+                            let is_dir = file_type.is_dir();
+                            if is_dir
                                 && is_junk_dir(&entry.file_name().to_string_lossy())
                             {
                                 return ignore::WalkState::Skip;
                             }
+                            
+                            let path_str = entry.path().to_string_lossy().to_string();
+                            let title_str = entry.file_name().to_string_lossy().to_string();
+                            let ext = entry.path().extension().and_then(|e| e.to_str()).unwrap_or("");
+                            let category = get_category(is_dir, ext);
+
+                            let metadata = entry.metadata().ok();
+                            let mtime = metadata
+                                .as_ref()
+                                .and_then(|m| m.modified().ok())
+                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                .map(|d| d.as_secs() as i64)
+                                .unwrap_or(0);
+                            let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+
+                            let mut text_content = String::new();
                             if file_type.is_file() {
-                                let path_str = entry.path().to_string_lossy().to_string();
-                                let title_str = entry.file_name().to_string_lossy().to_string();
-
-                                let metadata = entry.metadata().ok();
-                                let mtime = metadata
-                                    .as_ref()
-                                    .and_then(|m| m.modified().ok())
-                                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                                    .map(|d| d.as_secs() as i64)
-                                    .unwrap_or(0);
-                                let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
-
-                                let mut text_content = String::new();
-                                if let Some(ext) = entry.path().extension().and_then(|e| e.to_str())
+                                if ["txt", "md", "csv", "json", "rs", "ts", "tsx", "js", "jsx"]
+                                    .contains(&ext)
                                 {
-                                    if ["txt", "md", "csv", "json", "rs", "ts", "tsx", "js", "jsx"]
-                                        .contains(&ext)
-                                    {
-                                        if let Ok(mut file) = fs::File::open(entry.path()) {
-                                            // Read up to 2000 bytes without allocating the whole file
-                                            let mut buffer = vec![0; 2000];
-                                            if let Ok(bytes_read) = file.read(&mut buffer) {
-                                                buffer.truncate(bytes_read);
-                                                text_content =
-                                                    String::from_utf8_lossy(&buffer).into_owned();
-                                            }
+                                    if let Ok(mut file) = fs::File::open(entry.path()) {
+                                        // Read up to 2000 bytes without allocating the whole file
+                                        let mut buffer = vec![0; 2000];
+                                        if let Ok(bytes_read) = file.read(&mut buffer) {
+                                            buffer.truncate(bytes_read);
+                                            text_content =
+                                                String::from_utf8_lossy(&buffer).into_owned();
                                         }
                                     }
                                 }
-
-                                let content_str =
-                                    format!("{} {} {}", title_str, path_str, text_content);
-                                let _ =
-                                    tx.send((title_str, path_str, content_str, mtime, size as i64));
                             }
+
+                            let content_str =
+                                format!("{} {} {}", title_str, path_str, text_content);
+                            let _ =
+                                tx.send((title_str, path_str, content_str, mtime, size as i64, category));
                         }
                     }
                     ignore::WalkState::Continue
@@ -194,11 +203,11 @@ fn start_indexing(
             });
         }); // tx is dropped here when parallel walker finishes
 
-        let mut batch_insert: Vec<(String, String, String, i64, i64)> = Vec::with_capacity(BATCH);
+        let mut batch_insert: Vec<(String, String, String, i64, i64, String)> = Vec::with_capacity(BATCH);
         let mut batch_sync: Vec<String> = Vec::with_capacity(BATCH);
 
         let process_batches = |conn: &mut rusqlite::Connection,
-                               b_insert: &mut Vec<(String, String, String, i64, i64)>,
+                               b_insert: &mut Vec<(String, String, String, i64, i64, String)>,
                                b_sync: &mut Vec<String>| {
             if b_insert.is_empty() && b_sync.is_empty() {
                 return;
@@ -211,10 +220,10 @@ fn start_indexing(
                             "INSERT INTO file_index (title, path, content) VALUES (?1, ?2, ?3)",
                         )
                         .unwrap();
-                    let mut stmt_meta = conn.prepare_cached("INSERT OR REPLACE INTO file_metadata (path, mtime, size, sync_id) VALUES (?1, ?2, ?3, ?4)").unwrap();
-                    for (t, p, c, m, s) in b_insert.drain(..) {
+                    let mut stmt_meta = conn.prepare_cached("INSERT OR REPLACE INTO file_metadata (path, mtime, size, sync_id, category) VALUES (?1, ?2, ?3, ?4, ?5)").unwrap();
+                    for (t, p, c, m, s, cat) in b_insert.drain(..) {
                         let _ = stmt_idx.execute(params![t, p, c]);
-                        let _ = stmt_meta.execute(params![p, m, s, sync_id]);
+                        let _ = stmt_meta.execute(params![p, m, s, sync_id, cat]);
                     }
                 }
                 if !b_sync.is_empty() {
@@ -238,7 +247,12 @@ fn start_indexing(
 
         let mut first_file = true;
 
-        while let Ok((t, p, c, m, s)) = rx.recv() {
+        while let Ok((t, p, c, m, s, cat)) = rx.recv() {
+            if INDEX_GEN.load(std::sync::atomic::Ordering::SeqCst) != current_gen {
+                println!("Indexing cancelled by new generation");
+                return done(count);
+            }
+
             if first_file {
                 println!(
                     "First file received from channel in {:?}",
@@ -259,7 +273,7 @@ fn start_indexing(
             if skip_insert {
                 batch_sync.push(p);
             } else {
-                batch_insert.push((t, p, c, m, s));
+                batch_insert.push((t, p, c, m, s, cat));
             }
 
             if batch_insert.len() >= BATCH || batch_sync.len() >= BATCH {
@@ -304,7 +318,7 @@ fn start_indexing(
 }
 
 #[tauri::command]
-fn search_files(app_handle: AppHandle, query: String) -> Result<Vec<SearchResult>, String> {
+fn search_files(app_handle: AppHandle, query: String, category: String) -> Result<Vec<SearchResult>, String> {
     let trimmed_query = query.trim();
     if trimmed_query.is_empty() {
         return Ok(vec![]);
@@ -324,29 +338,38 @@ fn search_files(app_handle: AppHandle, query: String) -> Result<Vec<SearchResult
     let short_query = !is_regex && !trigram_capable;
     let mut final_results = Vec::new();
 
+    let cat_filter = if category == "All" { "" } else { "AND m.category = ?3" };
+
     if short_query {
-        let sql = "
+        let sql = format!("
             SELECT f.rowid, f.title, f.path,
                    'Matched in path or title' as snippet,
                    100 as bm25,
-                   m.size, m.mtime
+                   m.size, m.mtime, m.category
             FROM file_index f
             LEFT JOIN file_metadata m ON f.path = m.path
-            WHERE f.path LIKE ? OR f.title LIKE ?
+            WHERE (f.path LIKE ?1 OR f.title LIKE ?2) {}
             LIMIT 50
-        ";
+        ", cat_filter);
         let pattern = format!("%{}%", trimmed_query);
-        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        
+        let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![&pattern, &pattern];
+        if category != "All" {
+            params_vec.push(&category);
+        }
+        
         let results = stmt
-            .query_map(params![pattern, pattern], |row| {
+            .query_map(rusqlite::params_from_iter(params_vec), |row| {
                 Ok(SearchResult {
-                    id: row.get::<_, u32>(0)?,
+                    id: row.get::<_, i64>(0)?,
                     title: row.get::<_, String>(1)?,
                     path: row.get::<_, String>(2)?,
                     snippet: row.get::<_, String>(3)?,
                     relevance: 100,
                     size: row.get::<_, i64>(5).unwrap_or(0) as u64,
                     modified: row.get::<_, i64>(6).unwrap_or(0),
+                    category: row.get::<_, String>(7).unwrap_or_else(|_| "Other".to_string()),
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -360,27 +383,34 @@ fn search_files(app_handle: AppHandle, query: String) -> Result<Vec<SearchResult
         }
     } else if is_regex {
         let regex_pattern = &query[1..query.len() - 1];
-        let sql = "
+        let sql = format!("
             SELECT f.rowid, f.title, f.path,
                    'Regex match found in path or title' as snippet,
                    100 as bm25,
-                   m.size, m.mtime
+                   m.size, m.mtime, m.category
             FROM file_index f
             LEFT JOIN file_metadata m ON f.path = m.path
-            WHERE f.path REGEXP ? OR f.title REGEXP ?
+            WHERE (f.path REGEXP ?1 OR f.title REGEXP ?2) {}
             LIMIT 50
-        ";
-        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+        ", cat_filter);
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        
+        let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![&regex_pattern, &regex_pattern];
+        if category != "All" {
+            params_vec.push(&category);
+        }
+        
         let results = stmt
-            .query_map(params![regex_pattern, regex_pattern], |row| {
+            .query_map(rusqlite::params_from_iter(params_vec), |row| {
                 Ok(SearchResult {
-                    id: row.get::<_, u32>(0)?,
+                    id: row.get::<_, i64>(0)?,
                     title: row.get::<_, String>(1)?,
                     path: row.get::<_, String>(2)?,
                     snippet: row.get::<_, String>(3)?,
                     relevance: 100,
                     size: row.get::<_, i64>(5).unwrap_or(0) as u64,
                     modified: row.get::<_, i64>(6).unwrap_or(0),
+                    category: row.get::<_, String>(7).unwrap_or_else(|_| "Other".to_string()),
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -393,19 +423,20 @@ fn search_files(app_handle: AppHandle, query: String) -> Result<Vec<SearchResult
             }
         }
     } else {
-        let sql = "
+        let cat_filter_fts = if category == "All" { "" } else { "AND m.category = ?2" };
+        let sql = format!("
             SELECT file_index.rowid, file_index.title, file_index.path,
                    snippet(file_index, 0, '<b>', '</b>', '...', 10),
                    bm25(file_index),
-                   m.size, m.mtime
+                   m.size, m.mtime, m.category
             FROM file_index
             LEFT JOIN file_metadata m ON file_index.path = m.path
-            WHERE file_index MATCH ?
+            WHERE file_index MATCH ?1 {}
             ORDER BY rank
             LIMIT 50
-        ";
+        ", cat_filter_fts);
 
-        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
 
         // SQLite FTS syntax for prefix search; quote terms to avoid syntax
         // errors on special characters and drop tokens trigram cannot match.
@@ -422,14 +453,19 @@ fn search_files(app_handle: AppHandle, query: String) -> Result<Vec<SearchResult
             .collect();
         let fts_query = terms.join(" AND ");
 
+        let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![&fts_query];
+        if category != "All" {
+            params_vec.push(&category);
+        }
+
         let results = stmt
-            .query_map(params![fts_query], |row| {
+            .query_map(rusqlite::params_from_iter(params_vec), |row| {
                 let bm25: f64 = row.get::<_, f64>(4).unwrap_or(0.0);
                 // Trigram tokenizer produces different BM25 ranges than porter.
                 let relevance =
                     (100.0_f64 / (1.0_f64 + bm25.abs() * 0.15_f64)).clamp(1.0_f64, 100.0_f64) as u8;
                 Ok(SearchResult {
-                    id: row.get::<_, u32>(0)?,
+                    id: row.get::<_, i64>(0)?,
                     title: row.get::<_, String>(1)?,
                     path: row.get::<_, String>(2)?,
                     snippet: row
@@ -438,6 +474,7 @@ fn search_files(app_handle: AppHandle, query: String) -> Result<Vec<SearchResult
                     relevance,
                     size: row.get::<_, i64>(5).unwrap_or(0) as u64,
                     modified: row.get::<_, i64>(6).unwrap_or(0),
+                    category: row.get::<_, String>(7).unwrap_or_else(|_| "Other".to_string()),
                 })
             })
             .map_err(|e| {
@@ -455,6 +492,22 @@ fn search_files(app_handle: AppHandle, query: String) -> Result<Vec<SearchResult
     }
 
     Ok(final_results)
+}
+
+#[tauri::command]
+fn get_index_stats(app_handle: AppHandle) -> Result<usize, String> {
+    let pool = app_handle.state::<db::DbPool>();
+    let conn = pool.get().map_err(|_| "DB pool error".to_string())?;
+    
+    let mut stmt = conn
+        .prepare("SELECT COUNT(*) FROM file_metadata")
+        .map_err(|e| e.to_string())?;
+        
+    let count: i64 = stmt
+        .query_row([], |row| row.get(0))
+        .unwrap_or(0);
+        
+    Ok(count as usize)
 }
 
 #[tauri::command]
@@ -540,9 +593,18 @@ fn open_in_explorer(path: String) -> Result<String, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_opener::init());
+
+    #[cfg(debug_assertions)]
+    {
+        builder = builder
+            .plugin(tauri_plugin_wdio::init())
+            .plugin(tauri_plugin_wdio_webdriver::init());
+    }
+
+    builder
         .setup(|app| {
             let app_dir = app
                 .path()
@@ -697,7 +759,8 @@ pub fn run() {
             delete_file,
             get_system_drives,
             get_directories,
-            open_in_explorer
+            open_in_explorer,
+            get_index_stats
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -18,6 +18,8 @@ function App() {
     openResult,
     indexingProgress,
     setIndexingProgress,
+    dbTotalCount,
+    setDbTotalCount,
     activeCategory,
     setActiveCategory,
     activeSizeFilter,
@@ -98,7 +100,14 @@ function App() {
 
     const unlistenDone = listen<number>("indexing-done", () => {
       setIndexingProgress(null);
+      invoke<number>("get_index_stats")
+        .then(setDbTotalCount)
+        .catch(console.error);
     });
+
+    invoke<number>("get_index_stats")
+      .then(setDbTotalCount)
+      .catch(console.error);
 
     const unlistenRadar = listen<string[]>("live-radar-batch", (event) => {
       setRadarFiles(event.payload);
@@ -190,7 +199,7 @@ function App() {
   // Live search, debounced while typing (debounce lives in the store action)
   useEffect(() => {
     runSearch(searchQuery);
-  }, [searchQuery, runSearch]);
+  }, [searchQuery, activeCategory, runSearch]);
 
   // Escape clears the query / closes settings/about
   useEffect(() => {
@@ -228,32 +237,6 @@ function App() {
 
   const getFilteredResults = useCallback(() => {
     return results.filter((r) => {
-      // Category filter
-      if (activeCategory !== "All") {
-        const ext = r.path.split(".").pop()?.toLowerCase() || "";
-        const isPathDownloads = r.path.toLowerCase().includes("downloads");
-        let categoryMatch = false;
-        switch (activeCategory) {
-          case "Music":
-            categoryMatch = ["mp3", "wav", "flac", "ogg", "m4a"].includes(ext);
-            break;
-          case "Videos":
-            categoryMatch = ["mp4", "mkv", "avi", "mov", "webm"].includes(ext);
-            break;
-          case "Programs":
-            categoryMatch = ["exe", "msi", "bat", "cmd", "app", "sh"].includes(
-              ext,
-            );
-            break;
-          case "Downloads":
-            categoryMatch = isPathDownloads;
-            break;
-          default:
-            categoryMatch = true;
-        }
-        if (!categoryMatch) return false;
-      }
-
       // Size filter
       if (activeSizeFilter !== "Any Size") {
         const sizeInMB = r.size / (1024 * 1024);
@@ -566,6 +549,87 @@ function App() {
               </svg>
               Programs
             </button>
+            <button
+              className={`filter-btn ${activeCategory === "Images" ? "active" : ""}`}
+              onClick={() => setActiveCategory("Images")}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                <polyline points="21 15 16 10 5 21"></polyline>
+              </svg>
+              Images
+            </button>
+            <button
+              className={`filter-btn ${activeCategory === "Documents" ? "active" : ""}`}
+              onClick={() => setActiveCategory("Documents")}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+                <line x1="16" y1="13" x2="8" y2="13"></line>
+                <line x1="16" y1="17" x2="8" y2="17"></line>
+                <polyline points="10 9 9 9 8 9"></polyline>
+              </svg>
+              Docs
+            </button>
+            <button
+              className={`filter-btn ${activeCategory === "Archives" ? "active" : ""}`}
+              onClick={() => setActiveCategory("Archives")}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+                <line x1="16" y1="2" x2="16" y2="4"></line>
+                <line x1="8" y1="2" x2="8" y2="4"></line>
+                <circle cx="12" cy="11" r="1"></circle>
+                <path d="M12 12v6"></path>
+              </svg>
+              Archives
+            </button>
+            <button
+              className={`filter-btn ${activeCategory === "Code" ? "active" : ""}`}
+              onClick={() => setActiveCategory("Code")}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <polyline points="16 18 22 12 16 6"></polyline>
+                <polyline points="8 6 2 12 8 18"></polyline>
+              </svg>
+              Code
+            </button>
+            <button
+              className={`filter-btn ${activeCategory === "Folder" ? "active" : ""}`}
+              onClick={() => setActiveCategory("Folder")}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+              </svg>
+              Folders
+            </button>
             <div className="filter-divider"></div>
             <select
               className="advanced-filter-select"
@@ -649,6 +713,9 @@ function App() {
       <div className="info-bar">
         {filteredResults.length} items found
         {activeCategory !== "All" && <> · Showing {activeCategory}</>}
+        <span style={{ marginLeft: "16px", color: "var(--text-secondary)" }}>
+          · Database: {dbTotalCount.toLocaleString()} files
+        </span>
         {indexingProgress !== null && (
           <span
             style={{
@@ -667,7 +734,7 @@ function App() {
                 borderTopColor: "var(--brand-primary)",
               }}
             ></div>
-            Indexing: {indexingProgress.toLocaleString()} files
+            Scanning: {indexingProgress.toLocaleString()}
           </span>
         )}
       </div>

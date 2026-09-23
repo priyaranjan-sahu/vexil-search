@@ -1,0 +1,29 @@
+{
+  "rustc": 15335473461698482004,
+  "features": "[]",
+  "declared_features": "[\"simd-accel\"]",
+  "target": 12334212417946013711,
+  "profile": 15657897354478470176,
+  "path": 11964200377637504315,
+  "deps": [
+    [3062523621461665808, "globset", false, 9136804216379131525],
+    [5785418864289862565, "winapi_util", false, 3717620509277027064],
+    [11177420919098925944, "log", false, 12465830565639664270],
+    [11781824977070132858, "same_file", false, 12140915306792193651],
+    [12613788554453945248, "memchr", false, 2973019635845874129],
+    [13403374269483428720, "regex_automata", false, 11430305619826284665],
+    [15481973119957668846, "crossbeam_deque", false, 12604763575837214365],
+    [15622660310229662834, "walkdir", false, 17740871799688775409]
+  ],
+  "local": [
+    {
+      "CheckDepInfo": {
+        "dep_info": "debug\\.fingerprint\\ignore-bdfb12009421a1f7\\dep-lib-ignore",
+        "checksum": false
+      }
+    }
+  ],
+  "rustflags": [],
+  "config": 9396254390672932401,
+  "compile_kind": 0
+}

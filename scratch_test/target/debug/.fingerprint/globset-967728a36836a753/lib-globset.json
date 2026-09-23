@@ -1,0 +1,26 @@
+{
+  "rustc": 15335473461698482004,
+  "features": "[\"default\", \"log\"]",
+  "declared_features": "[\"arbitrary\", \"default\", \"log\", \"serde\", \"serde1\", \"simd-accel\"]",
+  "target": 9494496722596167712,
+  "profile": 15657897354478470176,
+  "path": 2416976442728611695,
+  "deps": [
+    [1853952367769002784, "regex_syntax", false, 18421204541356604085],
+    [6164656202659608538, "aho_corasick", false, 2323538923716532375],
+    [8829563036971845351, "bstr", false, 8376970902724964649],
+    [11177420919098925944, "log", false, 12465830565639664270],
+    [13403374269483428720, "regex_automata", false, 11430305619826284665]
+  ],
+  "local": [
+    {
+      "CheckDepInfo": {
+        "dep_info": "debug\\.fingerprint\\globset-967728a36836a753\\dep-lib-globset",
+        "checksum": false
+      }
+    }
+  ],
+  "rustflags": [],
+  "config": 9396254390672932401,
+  "compile_kind": 0
+}

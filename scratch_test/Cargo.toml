@@ -1,0 +1,8 @@
+[package]
+name = "scratch_test"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ignore = "0.4.33"
+opener = "0.8.5"

@@ -14,6 +14,7 @@ export interface SearchResult {
   relevance: number;
   size: number;
   modified: number;
+  category: string;
 }
 
 export interface DirEntry {
@@ -28,6 +29,7 @@ interface SearchState {
   results: SearchResult[];
   isSearching: boolean;
   indexingProgress: number | null;
+  dbTotalCount: number;
   activeCategory: string;
   activeSizeFilter: string;
   activeDateFilter: string;
@@ -49,6 +51,7 @@ interface SearchState {
   setResults: (results: SearchResult[]) => void;
   setIsSearching: (isSearching: boolean) => void;
   setIndexingProgress: (progress: number | null) => void;
+  setDbTotalCount: (count: number) => void;
   setActiveCategory: (category: string) => void;
   setActiveSizeFilter: (filter: string) => void;
   setActiveDateFilter: (filter: string) => void;
@@ -79,6 +82,7 @@ export const useSearchStore = create<SearchState>()(
       results: [],
       isSearching: false,
       indexingProgress: null,
+      dbTotalCount: 0,
       activeCategory: "All",
       activeSizeFilter: "Any Size",
       activeDateFilter: "Any Time",
@@ -100,6 +104,7 @@ export const useSearchStore = create<SearchState>()(
       setResults: (results) => set({ results, selectedResult: null }),
       setIsSearching: (isSearching) => set({ isSearching }),
       setIndexingProgress: (indexingProgress) => set({ indexingProgress }),
+      setDbTotalCount: (dbTotalCount) => set({ dbTotalCount }),
       setActiveCategory: (activeCategory) => set({ activeCategory }),
       setActiveSizeFilter: (activeSizeFilter) => set({ activeSizeFilter }),
       setActiveDateFilter: (activeDateFilter) => set({ activeDateFilter }),
@@ -187,6 +192,7 @@ export const useSearchStore = create<SearchState>()(
           try {
             const results = await invoke<SearchResult[]>("search_files", {
               query,
+              category: get().activeCategory,
             });
             if (searchSeq !== seq) return;
             set({ results, isSearching: false });

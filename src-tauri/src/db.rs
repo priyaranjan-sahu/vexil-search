@@ -11,6 +11,7 @@ pub struct SearchResult {
     pub relevance: u8,
     pub size: u64,
     pub modified: i64,
+    pub category: String,
 }
 
 use r2d2_sqlite::SqliteConnectionManager;
@@ -68,6 +69,10 @@ pub fn setup_db(app_dir: &PathBuf) -> SqlResult<Connection> {
         "ALTER TABLE file_metadata ADD COLUMN sync_id INTEGER DEFAULT 0",
         [],
     );
+    let _ = conn.execute(
+        "ALTER TABLE file_metadata ADD COLUMN category TEXT DEFAULT 'Other'",
+        [],
+    );
 
     conn.execute(
         "CREATE VIRTUAL TABLE IF NOT EXISTS file_index USING fts5(
@@ -80,4 +85,24 @@ pub fn setup_db(app_dir: &PathBuf) -> SqlResult<Connection> {
     )?;
 
     Ok(conn)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_db_initialization() {
+        let dir = tempdir().unwrap();
+        
+        let conn = setup_db(&dir.path().to_path_buf()).expect("Failed to init db");
+        
+        // Verify tables exist
+        let mut stmt = conn.prepare("SELECT name FROM sqlite_master WHERE type='table'").unwrap();
+        let tables: Vec<String> = stmt.query_map([], |row| row.get(0)).unwrap().map(|r| r.unwrap()).collect();
+        
+        assert!(tables.contains(&"file_metadata".to_string()));
+        assert!(tables.contains(&"file_index".to_string()));
+    }
 }
