@@ -46,8 +46,10 @@ interface SearchState {
   showAbout: boolean;
   activeMenu: string | null;
   runInBackground: boolean;
+  isPro: boolean;
 
   // Actions
+  setIsPro: (isPro: boolean) => void;
   setQuery: (query: string) => void;
   setResults: (results: SearchResult[]) => void;
   setIsSearching: (isSearching: boolean) => void;
@@ -101,7 +103,9 @@ export const useSearchStore = create<SearchState>()(
       showAbout: false,
       runInBackground: true,
       activeMenu: null,
+      isPro: false,
 
+      setIsPro: (isPro) => set({ isPro }),
       setQuery: (query) => set({ query }),
       setActiveMenu: (activeMenu) => set({ activeMenu }),
       setResults: (results) => set({ results, selectedResult: null }),
@@ -112,12 +116,18 @@ export const useSearchStore = create<SearchState>()(
       setActiveSizeFilter: (activeSizeFilter) => set({ activeSizeFilter }),
       setActiveDateFilter: (activeDateFilter) => set({ activeDateFilter }),
       setSelectedResult: (selectedResult) => set({ selectedResult }),
-      addMyPick: (pick) =>
+      addMyPick: (pick) => {
+        const state = get();
+        if (!state.isPro && state.myPicks.length >= 5) {
+          alert("Free tier is limited to 5 My Picks. Please upgrade to Pro.");
+          return;
+        }
         set((state) => ({
           myPicks: state.myPicks.some((p) => p.id === pick.id)
             ? state.myPicks
             : [...state.myPicks, pick],
-        })),
+        }));
+      },
       removeMyPick: (id) =>
         set((state) => ({
           myPicks: state.myPicks.filter((p) => p.id !== id),
@@ -150,6 +160,10 @@ export const useSearchStore = create<SearchState>()(
       setShowSettings: (showSettings) => set({ showSettings }),
       setShowAbout: (showAbout) => set({ showAbout }),
       setRunInBackground: (runInBackground) => {
+        if (runInBackground && !get().isPro) {
+          alert("Running in background is a Pro feature.");
+          return;
+        }
         set({ runInBackground });
         invoke("set_run_in_background", { enable: runInBackground }).catch(
           console.error,
@@ -249,6 +263,7 @@ export const useSearchStore = create<SearchState>()(
         customDirs: state.customDirs,
         excludedDirs: state.excludedDirs,
         runInBackground: state.runInBackground,
+        isPro: state.isPro,
       }),
     },
   ),
