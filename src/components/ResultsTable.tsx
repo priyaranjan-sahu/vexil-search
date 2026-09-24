@@ -165,6 +165,7 @@ export const ResultsTable = ({
 
   const parentRef = useRef<HTMLDivElement>(null);
 
+  // eslint-disable-next-line react-hooks/incompatible-library -- @tanstack/react-virtual is a third-party hooks library
   const virtualizer = useVirtualizer({
     count: filteredResults.length,
     getScrollElement: () => parentRef.current,

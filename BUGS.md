@@ -1,12 +1,10 @@
 # Vexil Search — Bug & Issue Audit
 
-Status of scan: **Sep 2026**. All findings verified against the current working
-tree (`npm run build`, `cargo build`, `npx tsc --noEmit`, `npx eslint` all pass —
-so every bug below is a runtime/logic/UX issue, not a compile error).
-
-Resolution status as of the fix pass: **P0:P1 = all fixed**, P2 = all fixed
-except legacy Rust WIP, P3 = all fixed, P4 = all fixed. See the per-item
-`[Status]` markers below.
+Status of scan: **Sep 2026 (second pass)**. All findings verified against the
+current working tree / HEAD `d388b43` (`npm run test:unit`, `cargo build`,
+`cargo test`, `npx tsc --noEmit`, `npx eslint src` all pass — so every bug
+below is a runtime/logic/UX issue, not a compile error). A follow-up fix pass
+resolved every open item; see "Fix pass — Sep 2026" at the bottom.
 
 Severity legend:
 
@@ -16,187 +14,265 @@ Severity legend:
 - **P3** — low-impact polish / minor UX
 - **P4** — dead code / debt / cleanup
 
----
-
-## P0 — Critical
-
-### 1. Global shortcut cannot minimize/unminimize the window (missing Tauri capability) — ✅ FIXED (`3833e93`)
-
-Added `core:window:allow-minimize` / `core:window:allow-unminimize` /
-`core:window:allow-close` to `src-tauri/capabilities/default.json`; the hotkey
-toggle is wrapped in try/catch and focuses `.search-input` after show.
-
-### 2. Live Radar: the emitted file paths are discarded; both UI elements show meaningless data — ✅ FIXED (`d5de09c`)
-
-Store holds real paths (`radarFiles: string[]`); the sidebar renders the newest
-path's basename and clicks open the real path via `openResult(string)`; the
-toast shows the real filename. No more `openPath("Updated N files")`.
-
-### 3. Live Radar rows never get `file_metadata` and never re-read file content — ✅ FIXED (`d5de09c`)
-
-Watcher now reads `fs::metadata()` (mtime/size), performs UPDATE-first to
-preserve `sync_id` (INSERT with `sync_id=0` otherwise), and reads up to 2000
-bytes of text content for text extensions (`txt md csv json rs ts tsx js jsx`).
-
-### 4. Live Radar passes a _filename_ to `is_junk_dir` — ✅ FIXED (background commit `681b346`)
-
-Junk detection is now component-based: `path.components().any(|c| is_junk_dir(...))`
-checks every ancestor directory of a changed file.
+Resolved by the previous audit's fix pass and **do not re-report**: global
+shortcut capabilities & toggle (`3833e93`), Live Radar path/metadata/content
+fixes (`d5de09c`), junk-dir component check (`681b346`), stale `store.ts` /
+`MenuBar` / `Toolbar` / `db_pool.rs` / `refactor.py` / empty `bin/` deletions
+(`ff46fb3`), store action implementations (`4cbd47b`), search hardening
+LIKE/regex/FTS fallbacks & unified `LIMIT 50` (`9cdd2ae`), menu wiring + SVG
+arrows + `i64` ids (`75c8b11`), progress-bar / CSS / capability cleanup
+(`e8fa85a`), and `security.rs` UNC-prefix strip (committed).
 
 ---
 
 ## P1 — High impact
 
-### 5. `src/store.ts` is a stale, conflicting duplicate — ✅ FIXED (deleted, `ff46fb3`)
+### 1. Every custom-dir / excluded-dir change triggers a full re-index
 
-### 6. MenuBar.tsx / Toolbar.tsx extracted but unused — ✅ FIXED (deleted by `681b346`; inline versions kept)
+`src/App.tsx:106-140` — the mount effect depends on `triggerIndexing`
+(`useCallback` recreated whenever `customDirs`/`excludedDirs` change,
+`src/App.tsx:96-104`). The effect body calls `triggerIndexing()` and re-runs on
+any tree checkbox toggle → **one full disk scan per checkbox click**, each new
+scan canceling the previous via `INDEX_GEN` bump (`src-tauri/src/lib.rs:59`).
+Typing through the Settings tree causes repeated, mutually-canceling whole-disk
+scans and chewing disk I/O.
 
-### 7. `handleDelete` leaves stale My Picks / Recent — ✅ FIXED (`4cbd47b`)
+Fix direction: trigger re-index explicitly (button/hotkey in Settings or a
+"changed" flag), or only re-listener on setting change and reindex on mount.
 
-Store `handleDelete` removes the row from `results`, `myPicks`, and
-`recentItems`, then clears `selectedResult`.
+### 2. "Run in Background" is on by default, contradicting the Pro gate
 
-### 8. Store's `handleCopyPath` / `handleDelete` were no-ops — ✅ FIXED (`4cbd47b`)
+`runInBackground` defaults to `true` in the store (`src/store/searchStore.ts:104`)
+and backend `AppState` (`src-tauri/src/lib.rs:729`). The Pro gate in
+`setRunInBackground` (`src/store/searchStore.ts:162-171`) only blocks _enabling_;
+free users already start with it enabled. Result: on fresh installs the window
+close hides to tray (app keeps running, `lib.rs:857-865`) and **File → Exit
+(`getCurrentWindow().close()`) does not quit — it hides to tray** because
+`CloseRequested` is prevented. Only the tray "Quit" exits.
 
-Real implementations now live in the store (clipboard copy; delete via
-`delete_file` with full cleanup). Hooked into the inline toolbar.
+Fix direction: default `false` (and require Pro to enable), and/or make
+File → Exit call a real quit (e.g. `app.exit(0)` via an `exit_app` command or
+`window.destroy()` behind a "really quit" flag).
 
-### 9. Empty / short / punctuation-only queries break or return nothing — ✅ FIXED (`9cdd2ae`)
+### 3. Live Radar never sets `category` → radar files are always "Other"
 
-`search_files` guards punctuation-only input (`Ok(vec![])`), falls back to
-`LIKE path/title` when no token has ≥3 alphanumeric chars (trigram can't match
-those), and drops sub-trigram tokens from the FTS junction.
+The watcher (`src-tauri/src/lib.rs:816-829`) UPDATEs only mtime/size and
+INSERTs metadata without a category, so the schema default `'Other'`
+(`db.rs:73`) applies. `get_category()` exists but is not used here. A fresh
+MP3/PDF in Downloads is invisible to the Music/Documents filters until the next
+full re-index. Also new files get `file_metadata.sync_id = 0` and rely on the
+next scan to bump it.
 
-### 10. Search isn't truly cancellable on the backend — ✅ FIXED (`4cbd47b`, frontend)
+Fix direction: compute `get_category(is_file, ext)` in the watcher and include it
+in both UPDATE and INSERT.
 
-`runSearch` in the store uses a latest-wins generation counter (`searchSeq`) +
-250ms debounce; every invocation cancels the previous timer and stale invokes
-discard their results. Enter (submit) runs `runSearch(query, true)`, clearing
-the pending debounce — no duplicate query.
+### 4. Deleted files stay searchable
 
-> Note: an `INDEX_GEN` generation counter at the Rust level was authored by a
-> concurrent process and is **uncommitted** (`src-tauri/src/lib.rs`). Verify and
-> keep or drop it when that file lands.
+- The watcher ignores `EventKind::Remove` (`lib.rs:763`), so files deleted on
+  disk remain in `file_index` until the next full scan.
+- `delete_file` command removes from `file_index` but **not** `file_metadata`
+  (`lib.rs:618-639`), leaving an orphaned metadata row.
+
+### 5. `.unwrap()` in background threads × `panic = "abort"` = whole-app crash
+
+`panic = "abort"` is set for release (`Cargo.toml`). The indexing thread uses
+`.unwrap()` liberally (`lib.rs:231-232`, `250-255`, `293-297`), and the watcher
+thread plus `process_batches` also assume success. Any SQLite error (WAL lock
+timeout, corrupt DB, disk full) in a spawned thread aborts the entire process
+instead of surfacing an error. Prefer propagating errors / early `done(0)` +
+logging.
 
 ---
 
 ## P2 — Medium
 
-### 11. Debug `println!` on every search keystroke — ✅ FIXED (`9cdd2ae`)
+### 6. Pro-only drive classification misfires on common hardware
 
-Removed the per-query prints in `search_files` (LIKE/Regex/FTS result counts and
-the "search_files called" line). Error-path prints remain.
+`get_system_drives` (`src-tauri/src/lib.rs:541-544`) marks any kind other than
+`HDD`/`SSD` as Pro-only:
 
-### 12. `log`/`env_logger` declared but never initialized — ✅ FIXED (background commit removed the deps from `Cargo.toml`)
+```rust
+let is_pro_only = match kind { HDD | SSD => false, _ => true };
+```
 
-### 13. `tauri-plugin-dialog` registered but unused — ✅ FIXED (background commit `5f8996e` removed plugin + `Cargo.toml` dep)
+But **sysinfo 0.32.1's `DiskKind` has only `HDD`, `SSD`, `Unknown(isize)`**
+(verified in `sysinfo-0.32.1/src/common/disk.rs` — no NVMe/EMMC/Removable
+variants). The Windows impl returns `Unknown(-1)` whenever the seek-penalty
+IOCTL fails (`sysinfo-0.32.1/src/windows/disk.rs`), which happens for optical
+drives, RAM disks, and on some NVMe setups. On affected machines the _primary
+drive_ is flagged 👑 PRO and free users cannot select it in the tree.
 
-### 14. Live Radar DB-failure backoff silently drops pending events — ✅ FIXED (`d5de09c`)
+Fix direction: base Pro-ness on `disk.is_removable()` (available in this
+sysinfo version) or on volume type, not `DiskKind`, and treat `Unknown` as
+"free" rather than "Pro".
 
-`pending_paths` is only drained after a successful connection; on DB error the
-set is kept and the loop sleeps 500 ms before retrying.
+### 7. `open_in_explorer` and `openPath` bypass the path security model
 
-### 15. FTS vs regex result limits inconsistent (20 vs 50) — ✅ FIXED (`9cdd2ae`), unified to `LIMIT 50`
+`delete_file` and `get_directories` validate through `security::AllowedRoots`,
+but `open_in_explorer` (`lib.rs:642`) passes the raw webview-supplied string
+straight to `opener::reveal`, and the frontend `openPath` (opener plugin
+`allow-open-path`) is uncapped. Low impact for a trusted local webview, but
+inconsistent with the hardened commands.
 
-### 16. Search submit duplicates the debounce — ✅ FIXED (`4cbd47b`), see #10
+### 8. Settings tree lists every volume; Pro-only children inherit badge but not gating
 
-### 17. Aborted searches can leave `isSearching` stuck true — ✅ FIXED (`4cbd47b`)
+`TreeNode` propagates `isProOnly` to all children (`src/components/TreeNode.tsx:161`)
+— correct for permission, but combined with #6 the misclassification spreads to
+an entire drive's subtree.
 
-`runSearch` always resets `isSearching` on every path (empty query, success,
-and error), and stale invokes are discarded by the generation counter.
+### 9. Radial watcher INSERT path can hit a UNIQUE constraint on no-op Modify
 
-### 18. Recent-items list never pruned — ✅ FIXED (`4cbd47b`) via #7 (delete drops the entry from `recentItems`)
+`lib.rs:824-829` — `UPDATE ... WHERE path=?`; if the event's mtime/size are
+unchanged, `conn.changes() == 0` triggers a plain `INSERT` into a `path`-PK
+table → swallowed "UNIQUE constraint failed". Harmless but noisy; prefer
+`INSERT OR IGNORE` / UPSERT.
 
-### 19. Virtualizer `estimateSize` / sticky-header jitter — ✅ PARTIALLY FIXED (`4cbd47b`)
+### 10. `get_index_stats` reports directories in "Database: N files"
 
-`estimateSize: () => 48` (slight over-estimate to avoid scroll jump). The sticky
-header + spacer rows pattern still warrants a visual check at runtime.
-
-### 20. Window not auto-focused on search input when summoned — ✅ FIXED (`3833e93`)
-
-Hotkey path focuses `document.querySelector('.search-input')` after `setFocus()`.
+It counts `file_metadata` rows, which includes `Folder` entries — cosmetic
+count inflation in the info bar.
 
 ---
 
 ## P3 — Low / Polish
 
-### 21. Menu items that do nothing — ✅ FIXED (`75c8b11`)
+### 11. Frontend lint warnings (0 errors, 5 warnings)
 
-New Search clears the query + focuses input (also wired to Ctrl+N); Edit→Copy
-copies the selected path, Paste reads the clipboard into the search box,
-Select All selects the input text.
+- `src/App.tsx:104,140,234` — `react-hooks/exhaustive-deps` (zustand setters
+  are stable; add them or eslint-disable with a comment).
+- `src/App.tsx:298` — `useCallback(getFilteredResults)` lists
+  `activeCategory` which it never reads (category filtering is backend-side).
+- `src/components/ResultsTable.tsx:168` — `useVirtualizer`
+  `react-hooks/incompatible-library` (React-Compiler lint, informational).
 
-### 22. Duplicate `localStorage` writes for theme/shortcut — ✅ FIXED (`4cbd47b` + `e8fa85a`)
+### 12. Vitest run prints React `act(...)` warnings
 
-Manual `localStorage.setItem` calls removed; persist middleware is the single
-source of truth.
+`npm run test:unit` passes but both tests emit
+"An update to App inside a test was not wrapped in act(...)" — async
+`invoke`/listener state updates leak past `render`. Wrap in `await`/`act` or
+use `findBy*` + `vi.waitFor`.
 
-### 23. `radarToast` split on a count string — ✅ FIXED (`d5de09c`), renders the real basename (`radarFiles[last].split(/[\\/]/).pop()`)
+### 13. Dead store actions
 
-### 24. Fake indeterminate progress bar — ✅ FIXED (`e8fa85a`)
+`addRecentItem` (`src/store/searchStore.ts:135`) and `setIsPro` (`:108`) are
+defined but never called (`openResult` inlines its own recent-items update).
+`setIsPro` is notable: nothing anywhere sets `isPro`, so the feature is entirely
+inert/bystandered — see also Pro gates being cosmetic (client-side `alert()` +
+persisted flag, trivially editable in localStorage).
 
-Removed the animated `progress-bar-fill` (never reflected a real total) and its
-JSX + CSS; the info bar keeps the live file count.
+### 14. Unused npm dependency `@tauri-apps/plugin-dialog`
 
-### 25. "Showing All" always rendered — ✅ FIXED (`4cbd47b`), suffix hidden when `activeCategory === "All"`
+`package.json:19` declares it but no source imports it (the Rust dialog plugin
+was removed in an earlier cleanup). Remove from dependencies.
 
-### 26. Emoji tree arrows — ✅ FIXED (`75c8b11`), replaced with inline SVG chevron; loading shows a text ellipsis
+### 15. wdio plugins compiled into release binaries
 
-### 27. Duplicate/conflicting `.search-wrapper` CSS — ✅ FIXED (`e8fa85a`)
+`tauri-plugin-wdio` / `tauri-plugin-wdio-webdriver` are unconditional Cargo
+deps (`Cargo.toml:34-35`); only the _init_ is gated to debug
+(`lib.rs:660-665`). Release builds still link them (binary bloat, and they
+expose an attack surface if ever initialized). Gate the deps to
+`[target.'cfg(debug_assertions)'.dependencies]`.
 
-Merged into a single block (modern look: 34px height, flex:1, max-width 360px)
-at the top of the file; the duplicate "Modern Search Box" block and the
-redundant `.search-wrapper svg/input` selectors were removed.
+### 16. Hardcoded GitHub links use `blob/master`
 
-### 28. `SearchResult.id` u32 → i64 — ✅ FIXED (`75c8b11` struct; `row.get::<_, i64>` in `lib.rs`)
+`src/App.tsx` links (`App.tsx:464`, `989`, `1005`) point at
+`priyaranjan-sahu/vexil-search/blob/master/...`. Origin remote is
+`priyaranjan-sahu/vexil`; public remote `vexil-search`. Files
+`PRIVACY_POLICY.md` / `TERMS_AND_CONDITIONS.md` exist in-repo — if the public
+repo's default branch is not `master` these 404. Verify / make branch-agnostic.
 
-> ⚠️ The three `i64` one-liners in `src-tauri/src/lib.rs` are currently sitting
-> **uncommitted** in the shared working tree (alongside a concurrent agent's
-> `INDEX_GEN` work). They compile and are validated by `cargo build`, but they
-> will land only when that file is committed.
+### 17. `search_files` regex/LIKE constant snippet + FTS snippet only highlights title column
 
-### 29. `open_in_explorer` silently ignores failures — ✅ FIXED (`e8fa85a`)
-
-Now alerts the user with the failing path on error.
-
----
-
-## P4 — Dead code / cleanup
-
-### 30. `src-tauri/src/db_pool.rs` un-compiled leftover — ✅ FIXED (deleted, `ff46fb3`)
-
-### 31. `refactor.py` leftover migration script — ✅ FIXED (deleted by background)
-
-### 32. Empty `src-tauri/src/bin/` dir — ✅ FIXED (deleted, `ff46fb3`)
-
-### 33. Dead import / interface drift in `src/store.ts` — ✅ FIXED (file deleted, `ff46fb3`)
-
-### 34. Redundant `core:window:allow-is-visible` — ✅ FIXED (`e8fa85a`)
-
-Verified against `src-tauri/gen/schemas/acl-manifests.json` that
-`allow-is-visible` is already inside `core:window:default`; explicit grant
-removed.
+`lib.rs:358,397` use a static "Matched in path or title" snippet; the FTS branch
+snippets only column 0 (title). Not a bug, but search-in-path matches show as
+unhighlighted.
 
 ---
 
-## Still open / owned by the concurrent process (not from this audit)
+## P4 — Dead code / debt / cleanup
 
-These appeared in the working tree during the fix pass and are **uncommitted**:
+### 18. `scratch_test/` is committed to git — ~110 MB build artifacts
 
-- `src-tauri/src/lib.rs` — `INDEX_GEN` generation-counter cancellation of
-  running indexers (compile-tested OK), plus a few `println!("DEBUG: ...")` in
-  `start_indexing` that should become `eprintln!`/`log` or be removed before
-  commit.
-- `src-tauri/src/security.rs` — strips the Windows `\\?\` UNC prefix after
-  canonicalization in `AllowedRoots::resolve` (lgtm; wins-prefix deseeding).
-- `scratch_test/` — untracked scratch Cargo crate at repo root; delete or move
-  out of the repository before commit.
+`git ls-files scratch_test` → **178 tracked files, ~115 MB** (a scratch Cargo
+crate with `target/`; all of it is build output). This bloats every clone/push.
+Fix:
 
-## Already fixed in current tree (do not re-report)
+```
+git rm -r --cached scratch_test
+echo "scratch_test/" >> .gitignore   # or delete outright
+git commit
+```
 
-- `open_in_explorer` command exists (`lib.rs`) and is in `invoke_handler`.
-- Store setters `setCustomDirs`/`setExcludedDirs` accept updater functions.
-- `ResultsTable` uses store `openResult`; no repeated `getVirtualItems()` calls.
-- FTS5 trigram + size/mtime metadata in `file_metadata`, BM25 rescale,
-  incremental mtime indexing, path-traversal hardening, CSP font bundling.
-- FTS escaping of special chars, regex size/DFA limits.
+### 19. Misc Rust cleanups
+
+- Duplicate `use tauri::Emitter;` inside `start_indexing` (`lib.rs:95` and `:130`).
+- `println!` debug logging in the indexer/watcher (`lib.rs:92,97,104,150,...`)
+  — switch to `log`/structured, keep release silent.
+- `security::AllowedRoots::add_custom` is `#[allow(dead_code)]` — unused now
+  that everything runs in `allow_whole_disk = true` mode.
+
+### 20. `wdio.conf.ts` / `test/e2e/*.ts` are outside type-checking
+
+`tsconfig.json` includes only `src`; `tsconfig.node.json` only `vite.config.ts`.
+The LSP reports missing `node`/`@wdio/globals` types in `wdio.conf.ts` and
+`test/e2e/app.spec.ts` (and a stale `@ts-expect-error` in `vite.config.ts`)
+while `npx tsc --noEmit` passes — those files are compiled by neither config, so
+E2E specs can drift out of type-safety. Add a `tsconfig.wdio.json` or `types`
+entries if desired.
+
+---
+
+## Fix pass — Sep 2026
+
+All 20 items above were resolved in this pass:
+
+- **#1** `App.tsx` — `triggerIndexing` now reads `customDirs`/`excludedDirs` via
+  `useSearchStore.getState()` and is stable, so the mount effect runs once;
+  Settings checkbox toggles no longer trigger disk scans.
+- **#2** `runInBackground` defaults to `false` (store + `AppState`); File → Exit
+  now calls a new `exit_app` command (`app.exit(0)`) instead of `window.close()`.
+- **#3** Watcher computes `get_category(false, ext)` and stores it on INSERT/UPDATE.
+- **#4** Watcher handles `EventKind::Remove` and purges `file_index` +
+  `file_metadata`; `delete_file` now also removes the `file_metadata` row.
+- **#5** `.unwrap()`s in the indexing thread / `process_batches` replaced with
+  error propagation + `log::error!` (back to non-panicking `done(count)` on
+  failure); tray-icon unwrap hardened via `ok_or`.
+- **#6** Pro gating now uses `disk.is_removable()` (sysinfo 0.32.1) — fixed
+  internal drives (incl. `Unknown(-1)` NVMe) are free; only removable media is Pro.
+- **#7** `open_in_explorer` validates the path through `security::AllowedRoots`
+  before `opener::reveal` (the `openPath` plugin scope remains wide; noted).
+- **#9** Watcher metadata insert is an UPSERT (`ON CONFLICT(path) DO UPDATE`),
+  no more swallowed UNIQUE-constraint noise, and it preserves `sync_id`.
+- **#10** `get_index_stats` counts `category != 'Folder'`.
+- **#11** eslint: 0 errors / 0 warnings (StrictMode-safe deps, removed spurious
+  `activeCategory` dep, documented `useVirtualizer` disable).
+- **#12** Vitest `act(...)` warnings gone (tests flush effects inside `act`).
+- **#13** Removed dead `addRecentItem` and `setIsPro` store actions.
+- **#14** Dropped `@tauri-apps/plugin-dialog` from package.json + lockfile.
+- **#15** wdio plugins moved behind a cargo `e2e` feature
+  (`debug_assertions` is unsupported for Cargo target-selection); `test:e2e`
+  now builds with `--features e2e` first. Release binaries are wdio-free
+  (verified via `cargo tree`).
+- **#16** Verified the public repo's default branch is `master`, so the hardcoded
+  `blob/master` links work — no change needed.
+- **#17** FTS snippet is now `COALESCE(snippet(title), snippet(path))`, so
+  path-only matches highlight too.
+- **#18** `git rm -r --cached scratch_test` + `.gitignore` entry (repo shrinks
+  by ~110 MB of build artifacts).
+- **#19** Removed duplicate `use tauri::Emitter`, `println!` → `log::*` (no
+  logger initialized ⇒ silent in release), removed dead `AllowedRoots::add_custom`.
+- **#20** Added `tsconfig.wdio.json` (+ `@types/node`, `@wdio/globals` devDeps
+  and a `typecheck:e2e` script) so `wdio.conf.ts` and `test/e2e/*` are now
+  type-checked: `tsc -p tsconfig.wdio.json` passes. (Editor LSP may still
+  associate those files with the root tsconfig until the project is reopened.)
+
+## Notes / verification
+
+- `npx tsc --noEmit`, `npx eslint src`, `npm run test:unit` (2 passed, 12s),
+  `cargo build`, `cargo test` (1 passed) — all green at HEAD `d388b43`.
+- `src-tauri/target` (and `src-tauri/gen/schemas`) correctly untracked.
+- CI: `build.yml` + `test.yml` run on every push/PR across 3 OS; `release.yml`
+  (tag `latest`) uses `git tag -f` + `push -f` and `releaseDraft: true`. No
+  Windows code-signing anywhere in CI — ties into the open "Unknown publisher"
+  thread (no free route exists once paid features land; track
+  `bundle.windows.signCommand` / Azure Artifact Signing).

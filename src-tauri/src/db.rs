@@ -95,13 +95,19 @@ mod tests {
     #[test]
     fn test_db_initialization() {
         let dir = tempdir().unwrap();
-        
+
         let conn = setup_db(&dir.path().to_path_buf()).expect("Failed to init db");
-        
+
         // Verify tables exist
-        let mut stmt = conn.prepare("SELECT name FROM sqlite_master WHERE type='table'").unwrap();
-        let tables: Vec<String> = stmt.query_map([], |row| row.get(0)).unwrap().map(|r| r.unwrap()).collect();
-        
+        let mut stmt = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+            .unwrap();
+        let tables: Vec<String> = stmt
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+
         assert!(tables.contains(&"file_metadata".to_string()));
         assert!(tables.contains(&"file_index".to_string()));
     }

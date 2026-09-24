@@ -39,8 +39,6 @@ function App() {
     addMyPick,
     removeMyPick,
     recentItems,
-    customDirs,
-    excludedDirs,
     theme,
     setTheme,
     shortcut,
@@ -93,15 +91,18 @@ function App() {
     );
   }, [runInBackground]);
 
+  // Index on mount only; read the latest dirs from the store so checkbox
+  // changes in Settings update the next scan without re-running this effect.
   const triggerIndexing = useCallback(async () => {
     try {
       setIndexingProgress(0);
+      const { customDirs, excludedDirs } = useSearchStore.getState();
       await invoke("start_indexing", { customDirs, excludedDirs });
     } catch (error) {
       alert(error);
       setIndexingProgress(null);
     }
-  }, [customDirs, excludedDirs]);
+  }, [setIndexingProgress]);
 
   useEffect(() => {
     // Database Indexing Progress Listeners
@@ -137,7 +138,13 @@ function App() {
       unlistenDone.then((f) => f());
       unlistenRadar.then((f) => f());
     };
-  }, [triggerIndexing]);
+  }, [
+    triggerIndexing,
+    setIndexingProgress,
+    setDbTotalCount,
+    setRadarFiles,
+    setRadarToast,
+  ]);
 
   // 3. Register Global Shortcut
   useEffect(() => {
@@ -231,7 +238,7 @@ function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [showSettings, showAbout]);
+  }, [showSettings, showAbout, setShowSettings, setShowAbout, setSearchQuery]);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -295,7 +302,7 @@ function App() {
 
       return true;
     });
-  }, [results, activeCategory, activeSizeFilter, activeDateFilter]);
+  }, [results, activeSizeFilter, activeDateFilter]);
   const filteredResults = useMemo(
     () => getFilteredResults(),
     [getFilteredResults],
@@ -333,7 +340,7 @@ function App() {
               <div className="menu-dropdown-divider"></div>
               <div
                 className="menu-dropdown-item"
-                onClick={() => getCurrentWindow().close()}
+                onClick={() => invoke("exit_app").catch(console.error)}
               >
                 Exit
               </div>

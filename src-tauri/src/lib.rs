@@ -7,13 +7,13 @@ use std::fs;
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::mpsc::channel;
+use std::sync::Mutex;
 use std::thread;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, WindowEvent,
 };
-use std::sync::Mutex;
 
 mod db;
 
@@ -44,7 +44,9 @@ fn get_category(is_dir: bool, ext: &str) -> String {
         "pdf" | "docx" | "doc" | "txt" | "rtf" => "Documents".to_string(),
         "exe" | "msi" | "bat" | "cmd" | "app" | "sh" => "Programs".to_string(),
         "zip" | "tar" | "gz" | "rar" | "7z" => "Archives".to_string(),
-        "rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "html" | "css" | "json" | "toml" | "yml" => "Code".to_string(),
+        "rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "html" | "css" | "json" | "toml" | "yml" => {
+            "Code".to_string()
+        }
         _ => "Other".to_string(),
     }
 }
@@ -89,24 +91,26 @@ fn start_indexing(
 
     thread::spawn(move || {
         let start_time = std::time::Instant::now();
-        println!("Indexing thread started");
+        log::debug!("Indexing thread started");
 
         let done = |count: i64| {
-            use tauri::Emitter;
             let _ = app_clone.emit("indexing-done", count);
-            println!("Indexing done in {:?}", start_time.elapsed());
+            log::debug!("Indexing done in {:?}", start_time.elapsed());
         };
 
         let mut conn = match open_db(&path) {
             Ok(c) => c,
-            Err(_) => return done(0),
+            Err(e) => {
+                log::error!("Failed to open DB during indexing: {e}");
+                return done(0);
+            }
         };
-        println!("DB opened in {:?}", start_time.elapsed());
+        log::debug!("DB opened in {:?}", start_time.elapsed());
 
         // Removed existing_files memory bottleneck!
         let sync_id = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs() as i64;
 
         let mut dirs_to_scan = Vec::new();
@@ -127,7 +131,6 @@ fn start_indexing(
             }
         }
 
-        use tauri::Emitter;
         let mut count: i64 = 0;
         const BATCH: usize = 500;
 
@@ -147,7 +150,7 @@ fn start_indexing(
         let (tx, rx) = channel();
         let exclusions_arc = std::sync::Arc::new(exclusions);
 
-        println!("WalkBuilder initialized in {:?}", start_time.elapsed());
+        log::debug!("WalkBuilder initialized in {:?}", start_time.elapsed());
 
         // Spawn parallel walker
         thread::spawn(move || {
@@ -164,15 +167,17 @@ fn start_indexing(
                         }
                         if let Some(file_type) = entry.file_type() {
                             let is_dir = file_type.is_dir();
-                            if is_dir
-                                && is_junk_dir(&entry.file_name().to_string_lossy())
-                            {
+                            if is_dir && is_junk_dir(&entry.file_name().to_string_lossy()) {
                                 return ignore::WalkState::Skip;
                             }
-                            
+
                             let path_str = entry.path().to_string_lossy().to_string();
                             let title_str = entry.file_name().to_string_lossy().to_string();
-                            let ext = entry.path().extension().and_then(|e| e.to_str()).unwrap_or("");
+                            let ext = entry
+                                .path()
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .unwrap_or("");
                             let category = get_category(is_dir, ext);
 
                             let metadata = entry.metadata().ok();
@@ -203,8 +208,14 @@ fn start_indexing(
 
                             let content_str =
                                 format!("{} {} {}", title_str, path_str, text_content);
-                            let _ =
-                                tx.send((title_str, path_str, content_str, mtime, size as i64, category));
+                            let _ = tx.send((
+                                title_str,
+                                path_str,
+                                content_str,
+                                mtime,
+                                size as i64,
+                                category,
+                            ));
                         }
                     }
                     ignore::WalkState::Continue
@@ -212,7 +223,8 @@ fn start_indexing(
             });
         }); // tx is dropped here when parallel walker finishes
 
-        let mut batch_insert: Vec<(String, String, String, i64, i64, String)> = Vec::with_capacity(BATCH);
+        let mut batch_insert: Vec<(String, String, String, i64, i64, String)> =
+            Vec::with_capacity(BATCH);
         let mut batch_sync: Vec<String> = Vec::with_capacity(BATCH);
 
         let process_batches = |conn: &mut rusqlite::Connection,
@@ -221,49 +233,64 @@ fn start_indexing(
             if b_insert.is_empty() && b_sync.is_empty() {
                 return;
             }
-            let _ = conn.execute_batch("BEGIN");
-            {
+            if conn.execute_batch("BEGIN").is_err() {
+                log::error!("Failed to BEGIN batch transaction during indexing");
+                return;
+            }
+            let batch_result = (|| -> rusqlite::Result<()> {
                 if !b_insert.is_empty() {
-                    let mut stmt_idx = conn
-                        .prepare_cached(
-                            "INSERT INTO file_index (title, path, content) VALUES (?1, ?2, ?3)",
-                        )
-                        .unwrap();
-                    let mut stmt_meta = conn.prepare_cached("INSERT OR REPLACE INTO file_metadata (path, mtime, size, sync_id, category) VALUES (?1, ?2, ?3, ?4, ?5)").unwrap();
+                    let mut stmt_idx = conn.prepare_cached(
+                        "INSERT INTO file_index (title, path, content) VALUES (?1, ?2, ?3)",
+                    )?;
+                    let mut stmt_meta = conn.prepare_cached(
+                        "INSERT OR REPLACE INTO file_metadata (path, mtime, size, sync_id, category) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    )?;
                     for (t, p, c, m, s, cat) in b_insert.drain(..) {
-                        let _ = stmt_idx.execute(params![t, p, c]);
-                        let _ = stmt_meta.execute(params![p, m, s, sync_id, cat]);
+                        stmt_idx.execute(params![t, p, c])?;
+                        stmt_meta.execute(params![p, m, s, sync_id, cat])?;
                     }
                 }
                 if !b_sync.is_empty() {
                     let mut stmt_update = conn
-                        .prepare_cached("UPDATE file_metadata SET sync_id = ?1 WHERE path = ?2")
-                        .unwrap();
+                        .prepare_cached("UPDATE file_metadata SET sync_id = ?1 WHERE path = ?2")?;
                     for p in b_sync.drain(..) {
-                        let _ = stmt_update.execute(params![sync_id, p]);
+                        stmt_update.execute(params![sync_id, p])?;
                     }
                 }
+                conn.execute_batch("COMMIT")
+            })();
+            if let Err(e) = batch_result {
+                let _ = conn.execute_batch("ROLLBACK");
+                log::error!("Batch insert failed during indexing: {e}");
             }
-            let _ = conn.execute_batch("COMMIT");
         };
 
-        let mut check_mtime = conn
-            .prepare_cached("SELECT mtime FROM file_metadata WHERE path = ?1")
-            .unwrap();
-        let mut delete_idx = conn
-            .prepare_cached("DELETE FROM file_index WHERE path = ?1")
-            .unwrap();
+        let mut check_mtime =
+            match conn.prepare_cached("SELECT mtime FROM file_metadata WHERE path = ?1") {
+                Ok(stmt) => stmt,
+                Err(e) => {
+                    log::error!("Failed to prepare mtime check: {e}");
+                    return done(0);
+                }
+            };
+        let mut delete_idx = match conn.prepare_cached("DELETE FROM file_index WHERE path = ?1") {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                log::error!("Failed to prepare delete statement: {e}");
+                return done(0);
+            }
+        };
 
         let mut first_file = true;
 
         while let Ok((t, p, c, m, s, cat)) = rx.recv() {
             if INDEX_GEN.load(std::sync::atomic::Ordering::SeqCst) != current_gen {
-                println!("Indexing cancelled by new generation");
+                log::debug!("Indexing cancelled by new generation");
                 return done(count);
             }
 
             if first_file {
-                println!(
+                log::debug!(
                     "First file received from channel in {:?}",
                     start_time.elapsed()
                 );
@@ -289,12 +316,18 @@ fn start_indexing(
                 drop(check_mtime); // MUST drop prepared statements before processing batch due to connection mutability
                 drop(delete_idx);
                 process_batches(&mut conn, &mut batch_insert, &mut batch_sync);
-                check_mtime = conn
+                (check_mtime, delete_idx) = match conn
                     .prepare_cached("SELECT mtime FROM file_metadata WHERE path = ?1")
-                    .unwrap();
-                delete_idx = conn
-                    .prepare_cached("DELETE FROM file_index WHERE path = ?1")
-                    .unwrap();
+                    .and_then(|stmt| {
+                        conn.prepare_cached("DELETE FROM file_index WHERE path = ?1")
+                            .map(|del| (stmt, del))
+                    }) {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        log::error!("Failed to re-prepare indexing statements: {e}");
+                        return done(count);
+                    }
+                };
             }
 
             count += 1;
@@ -327,7 +360,11 @@ fn start_indexing(
 }
 
 #[tauri::command]
-fn search_files(app_handle: AppHandle, query: String, category: String) -> Result<Vec<SearchResult>, String> {
+fn search_files(
+    app_handle: AppHandle,
+    query: String,
+    category: String,
+) -> Result<Vec<SearchResult>, String> {
     let trimmed_query = query.trim();
     if trimmed_query.is_empty() {
         return Ok(vec![]);
@@ -347,10 +384,15 @@ fn search_files(app_handle: AppHandle, query: String, category: String) -> Resul
     let short_query = !is_regex && !trigram_capable;
     let mut final_results = Vec::new();
 
-    let cat_filter = if category == "All" { "" } else { "AND m.category = ?3" };
+    let cat_filter = if category == "All" {
+        ""
+    } else {
+        "AND m.category = ?3"
+    };
 
     if short_query {
-        let sql = format!("
+        let sql = format!(
+            "
             SELECT f.rowid, f.title, f.path,
                    'Matched in path or title' as snippet,
                    100 as bm25,
@@ -359,15 +401,17 @@ fn search_files(app_handle: AppHandle, query: String, category: String) -> Resul
             LEFT JOIN file_metadata m ON f.path = m.path
             WHERE (f.path LIKE ?1 OR f.title LIKE ?2) {}
             LIMIT 50
-        ", cat_filter);
+        ",
+            cat_filter
+        );
         let pattern = format!("%{}%", trimmed_query);
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-        
+
         let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![&pattern, &pattern];
         if category != "All" {
             params_vec.push(&category);
         }
-        
+
         let results = stmt
             .query_map(rusqlite::params_from_iter(params_vec), |row| {
                 Ok(SearchResult {
@@ -378,7 +422,9 @@ fn search_files(app_handle: AppHandle, query: String, category: String) -> Resul
                     relevance: 100,
                     size: row.get::<_, i64>(5).unwrap_or(0) as u64,
                     modified: row.get::<_, i64>(6).unwrap_or(0),
-                    category: row.get::<_, String>(7).unwrap_or_else(|_| "Other".to_string()),
+                    category: row
+                        .get::<_, String>(7)
+                        .unwrap_or_else(|_| "Other".to_string()),
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -387,12 +433,13 @@ fn search_files(app_handle: AppHandle, query: String, category: String) -> Resul
             if let Ok(r) = res {
                 final_results.push(r);
             } else if let Err(e) = res {
-                println!("LIKE query row error: {}", e);
+                log::debug!("LIKE query row error: {}", e);
             }
         }
     } else if is_regex {
         let regex_pattern = &query[1..query.len() - 1];
-        let sql = format!("
+        let sql = format!(
+            "
             SELECT f.rowid, f.title, f.path,
                    'Regex match found in path or title' as snippet,
                    100 as bm25,
@@ -401,14 +448,16 @@ fn search_files(app_handle: AppHandle, query: String, category: String) -> Resul
             LEFT JOIN file_metadata m ON f.path = m.path
             WHERE (f.path REGEXP ?1 OR f.title REGEXP ?2) {}
             LIMIT 50
-        ", cat_filter);
+        ",
+            cat_filter
+        );
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-        
+
         let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![&regex_pattern, &regex_pattern];
         if category != "All" {
             params_vec.push(&category);
         }
-        
+
         let results = stmt
             .query_map(rusqlite::params_from_iter(params_vec), |row| {
                 Ok(SearchResult {
@@ -419,7 +468,9 @@ fn search_files(app_handle: AppHandle, query: String, category: String) -> Resul
                     relevance: 100,
                     size: row.get::<_, i64>(5).unwrap_or(0) as u64,
                     modified: row.get::<_, i64>(6).unwrap_or(0),
-                    category: row.get::<_, String>(7).unwrap_or_else(|_| "Other".to_string()),
+                    category: row
+                        .get::<_, String>(7)
+                        .unwrap_or_else(|_| "Other".to_string()),
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -428,14 +479,19 @@ fn search_files(app_handle: AppHandle, query: String, category: String) -> Resul
             if let Ok(r) = res {
                 final_results.push(r);
             } else if let Err(e) = res {
-                println!("Regex query row error: {}", e);
+                log::debug!("Regex query row error: {}", e);
             }
         }
     } else {
-        let cat_filter_fts = if category == "All" { "" } else { "AND m.category = ?2" };
-        let sql = format!("
+        let cat_filter_fts = if category == "All" {
+            ""
+        } else {
+            "AND m.category = ?2"
+        };
+        let sql = format!(
+            "
             SELECT file_index.rowid, file_index.title, file_index.path,
-                   snippet(file_index, 0, '<b>', '</b>', '...', 10),
+                   COALESCE(snippet(file_index, 0, '<b>', '</b>', '...', 10), snippet(file_index, 1, '<b>', '</b>', '...', 10)),
                    bm25(file_index),
                    m.size, m.mtime, m.category
             FROM file_index
@@ -443,7 +499,9 @@ fn search_files(app_handle: AppHandle, query: String, category: String) -> Resul
             WHERE file_index MATCH ?1 {}
             ORDER BY rank
             LIMIT 50
-        ", cat_filter_fts);
+        ",
+            cat_filter_fts
+        );
 
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
 
@@ -483,11 +541,13 @@ fn search_files(app_handle: AppHandle, query: String, category: String) -> Resul
                     relevance,
                     size: row.get::<_, i64>(5).unwrap_or(0) as u64,
                     modified: row.get::<_, i64>(6).unwrap_or(0),
-                    category: row.get::<_, String>(7).unwrap_or_else(|_| "Other".to_string()),
+                    category: row
+                        .get::<_, String>(7)
+                        .unwrap_or_else(|_| "Other".to_string()),
                 })
             })
             .map_err(|e| {
-                println!("FTS query_map error: {}", e);
+                log::error!("FTS query_map error: {}", e);
                 e.to_string()
             })?;
 
@@ -495,7 +555,7 @@ fn search_files(app_handle: AppHandle, query: String, category: String) -> Resul
             if let Ok(r) = res {
                 final_results.push(r);
             } else if let Err(e) = res {
-                println!("FTS query row error: {}", e);
+                log::debug!("FTS query row error: {}", e);
             }
         }
     }
@@ -507,15 +567,13 @@ fn search_files(app_handle: AppHandle, query: String, category: String) -> Resul
 fn get_index_stats(app_handle: AppHandle) -> Result<usize, String> {
     let pool = app_handle.state::<db::DbPool>();
     let conn = pool.get().map_err(|_| "DB pool error".to_string())?;
-    
+
     let mut stmt = conn
-        .prepare("SELECT COUNT(*) FROM file_metadata")
+        .prepare("SELECT COUNT(*) FROM file_metadata WHERE category != 'Folder'")
         .map_err(|e| e.to_string())?;
-        
-    let count: i64 = stmt
-        .query_row([], |row| row.get(0))
-        .unwrap_or(0);
-        
+
+    let count: i64 = stmt.query_row([], |row| row.get(0)).unwrap_or(0);
+
     Ok(count as usize)
 }
 
@@ -531,17 +589,16 @@ struct DriveInfo {
 #[tauri::command]
 fn get_system_drives() -> Result<Vec<DriveInfo>, String> {
     let mut drives = Vec::new();
-    
+
     let disks = Disks::new_with_refreshed_list();
     for disk in disks.list() {
         let path = disk.mount_point().to_string_lossy().to_string();
         let name = disk.name().to_string_lossy().to_string();
-        let kind = disk.kind();
-        
-        let is_pro_only = match kind {
-            sysinfo::DiskKind::HDD | sysinfo::DiskKind::SSD => false,
-            _ => true,
-        };
+
+        // sysinfo's DiskKind is only HDD/SSD/Unknown on Windows, and the OEM
+        // IOCTL it uses frequently reports Unknown(-1) for fixed NVMe/optical
+        // drives. Gate on removability instead so real internal drives stay free.
+        let is_pro_only = disk.is_removable();
 
         let display_name = if name.is_empty() {
             path.clone()
@@ -576,7 +633,7 @@ fn get_system_drives() -> Result<Vec<DriveInfo>, String> {
             });
         }
     }
-    
+
     Ok(drives)
 }
 
@@ -631,6 +688,10 @@ fn delete_file(app_handle: AppHandle, path: String) -> Result<String, String> {
                     "DELETE FROM file_index WHERE path = ?1",
                     params![valid_path_str],
                 );
+                let _ = conn.execute(
+                    "DELETE FROM file_metadata WHERE path = ?1",
+                    params![valid_path_str],
+                );
             }
             Ok("File deleted".to_string())
         }
@@ -640,7 +701,12 @@ fn delete_file(app_handle: AppHandle, path: String) -> Result<String, String> {
 
 #[tauri::command]
 fn open_in_explorer(path: String) -> Result<String, String> {
-    opener::reveal(&path).map_err(|e| e.to_string())?;
+    let allowed = security::AllowedRoots::new(true);
+    let valid_path = allowed
+        .validate(&path)
+        .map_err(|e| format!("Security: {}", e))?;
+
+    opener::reveal(&valid_path).map_err(|e| e.to_string())?;
     Ok("Opened".to_string())
 }
 
@@ -651,13 +717,20 @@ fn set_run_in_background(app_handle: AppHandle, enable: bool) {
     }
 }
 
+#[tauri::command]
+fn exit_app(app_handle: AppHandle) {
+    app_handle.exit(0);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // `mut` is only needed when the e2e feature re-assigns builder below
+    #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_opener::init());
 
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "e2e")]
     {
         builder = builder
             .plugin(tauri_plugin_wdio::init())
@@ -668,9 +741,13 @@ pub fn run() {
         .setup(|app| {
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&quit_i])?;
+            let tray_icon = app
+                .default_window_icon()
+                .cloned()
+                .ok_or("no default window icon")?;
 
             let _tray = TrayIconBuilder::new()
-                .icon(app.default_window_icon().unwrap().clone())
+                .icon(tray_icon)
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "quit" => {
@@ -726,7 +803,7 @@ pub fn run() {
             app.manage(pool);
             
             app.manage(AppState {
-                run_in_background: Mutex::new(true),
+                run_in_background: Mutex::new(false),
             });
 
             // Live Radar: Live File System Watcher
@@ -745,8 +822,9 @@ pub fn run() {
                 }
                 
                 let mut pending_paths = std::collections::HashSet::new();
+                let mut pending_removes = std::collections::HashSet::new();
                 loop {
-                    let res = if pending_paths.is_empty() {
+                    let res = if pending_paths.is_empty() && pending_removes.is_empty() {
                         rx.recv().ok()
                     } else {
                         rx.recv_timeout(std::time::Duration::from_millis(500)).ok()
@@ -760,9 +838,16 @@ pub fn run() {
                             // Don't process immediately, wait for timeout to coalesce
                             continue;
                         }
+                        Some(Ok(Event { kind: EventKind::Remove(_), paths, .. })) => {
+                            for path in paths {
+                                pending_removes.insert(path);
+                            }
+                            // Don't process immediately, wait for timeout to coalesce
+                            continue;
+                        }
                         Some(_) => continue, // Ignore other events
                         None => {
-                            if pending_paths.is_empty() {
+                            if pending_paths.is_empty() && pending_removes.is_empty() {
                                 // Channel disconnected and nothing pending
                                 break;
                             }
@@ -770,8 +855,20 @@ pub fn run() {
                     }
 
                     // Timeout reached or channel disconnected with pending paths
-                    if !pending_paths.is_empty() {
+                    if !pending_paths.is_empty() || !pending_removes.is_empty() {
                         if let Ok(conn) = open_db(&db_path_clone) {
+                            // Purge removed paths so they stop showing up in search
+                            for path in pending_removes.drain() {
+                                let path_str = path.to_string_lossy().to_string();
+                                let _ = conn.execute(
+                                    "DELETE FROM file_index WHERE path = ?1",
+                                    params![&path_str],
+                                );
+                                let _ = conn.execute(
+                                    "DELETE FROM file_metadata WHERE path = ?1",
+                                    params![&path_str],
+                                );
+                            }
                             let mut processed_paths = Vec::new();
                             for path in pending_paths.drain() {
                                 if !path.is_file() {
@@ -789,6 +886,8 @@ pub fn run() {
                                 }
                                 let path_str = path.to_string_lossy().to_string();
                                 let title_str = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                                let category = get_category(false, ext);
 
                                 let metadata = std::fs::metadata(&path).ok();
                                 let mtime = metadata
@@ -816,17 +915,12 @@ pub fn run() {
                                 let _ = conn.execute("DELETE FROM file_index WHERE path = ?1", params![&path_str]);
                                 let _ = conn.execute("INSERT INTO file_index (title, path, content) VALUES (?1, ?2, ?3)", params![&title_str, &path_str, &content_str]);
 
-                                // Update metadata if it exists (preserves sync_id), insert otherwise
+                                // Upsert metadata with the file's category, preserving sync_id
+                                // (stale-GC uses sync_id, so keep it on updates)
                                 let _ = conn.execute(
-                                    "UPDATE file_metadata SET mtime = ?1, size = ?2 WHERE path = ?3",
-                                    params![mtime, size as i64, &path_str],
+                                    "INSERT INTO file_metadata (path, mtime, size, sync_id, category) VALUES (?1, ?2, ?3, 0, ?4) ON CONFLICT(path) DO UPDATE SET mtime = excluded.mtime, size = excluded.size, category = excluded.category",
+                                    params![&path_str, mtime, size as i64, &category],
                                 );
-                                if conn.changes() == 0 {
-                                    let _ = conn.execute(
-                                        "INSERT INTO file_metadata (path, mtime, size, sync_id) VALUES (?1, ?2, ?3, 0)",
-                                        params![&path_str, mtime, size as i64],
-                                    );
-                                }
 
                                 processed_paths.push(path_str);
                             }
@@ -852,7 +946,8 @@ pub fn run() {
             get_directories,
             open_in_explorer,
             get_index_stats,
-            set_run_in_background
+            set_run_in_background,
+            exit_app
         ])
         .on_window_event(|window, event| match event {
             WindowEvent::CloseRequested { api, .. } => {

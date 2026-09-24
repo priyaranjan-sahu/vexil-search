@@ -4863,6 +4863,7 @@ version = "0.1.0"
 dependencies = [
  "dirs 7.0.0",
  "ignore",
+ "log",
  "notify",
  "opener",
  "r2d2",

@@ -49,7 +49,6 @@ interface SearchState {
   isPro: boolean;
 
   // Actions
-  setIsPro: (isPro: boolean) => void;
   setQuery: (query: string) => void;
   setResults: (results: SearchResult[]) => void;
   setIsSearching: (isSearching: boolean) => void;
@@ -61,7 +60,6 @@ interface SearchState {
   setSelectedResult: (result: SearchResult | null) => void;
   addMyPick: (pick: SearchResult) => void;
   removeMyPick: (id: number) => void;
-  addRecentItem: (item: SearchResult) => void;
   setRadarFiles: (paths: string[]) => void;
   setRadarToast: (toast: string | null) => void;
   setCustomDirs: (dirs: string[] | ((prev: string[]) => string[])) => void;
@@ -101,11 +99,10 @@ export const useSearchStore = create<SearchState>()(
       shortcut: "CommandOrControl+Shift+Space",
       showSettings: false,
       showAbout: false,
-      runInBackground: true,
+      runInBackground: false,
       activeMenu: null,
       isPro: false,
 
-      setIsPro: (isPro) => set({ isPro }),
       setQuery: (query) => set({ query }),
       setActiveMenu: (activeMenu) => set({ activeMenu }),
       setResults: (results) => set({ results, selectedResult: null }),
@@ -131,13 +128,6 @@ export const useSearchStore = create<SearchState>()(
       removeMyPick: (id) =>
         set((state) => ({
           myPicks: state.myPicks.filter((p) => p.id !== id),
-        })),
-      addRecentItem: (item) =>
-        set((state) => ({
-          recentItems: [
-            item,
-            ...state.recentItems.filter((r) => r.id !== item.id),
-          ].slice(0, 5),
         })),
       setRadarFiles: (radarFiles) => set({ radarFiles }),
       setRadarToast: (radarToast) => set({ radarToast }),

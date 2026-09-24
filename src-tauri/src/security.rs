@@ -21,13 +21,6 @@ impl AllowedRoots {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn add_custom(&mut self, path: PathBuf) {
-        if let Ok(canon) = path.canonicalize() {
-            self.roots.push(canon);
-        }
-    }
-
     // In our implementation, since the settings are passed dynamically to `start_indexing`,
     // it's slightly trickier to mutate this global state. For now, since `get_directories`
     // can technically browse anywhere on the system (e.g. from Root Drives), we need to
@@ -53,7 +46,7 @@ impl AllowedRoots {
 
         // 3. Canonicalize (resolves symlinks, validates existence)
         let mut canon = abs.canonicalize().map_err(|_| SecurityError::InvalidPath)?;
-        
+
         // Strip Windows UNC prefix if present
         if cfg!(windows) {
             let canon_str = canon.to_string_lossy().to_string();
