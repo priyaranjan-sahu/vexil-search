@@ -33,6 +33,7 @@ opener = { version = "0.8.5", features = ["reveal"] }
 ignore = "0.4.33"
 tauri-plugin-wdio-webdriver = "1.4.0"
 tauri-plugin-wdio = "1.4.0"
+sysinfo = "0.32"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

@@ -52,6 +52,7 @@ function App() {
     setShowAbout,
     handleCopyPath,
     handleDelete,
+    isPro,
   } = useSearchStore();
 
   const [contextMenu, setContextMenu] = useState<{
@@ -881,7 +882,23 @@ function App() {
           <div className="settings-panel" onClick={(e) => e.stopPropagation()}>
             <h2 className="settings-header">Preferences</h2>
             <div className="settings-row">
-              <label>Run in Background</label>
+              <label>
+                Run in Background
+                {!isPro && (
+                  <span
+                    style={{
+                      fontSize: "0.65rem",
+                      background: "var(--brand-primary)",
+                      color: "white",
+                      padding: "2px 5px",
+                      borderRadius: "4px",
+                      marginLeft: "8px",
+                    }}
+                  >
+                    👑 PRO
+                  </span>
+                )}
+              </label>
               <div
                 className="settings-controls"
                 style={{ display: "flex", alignItems: "center" }}

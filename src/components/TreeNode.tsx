@@ -11,6 +11,8 @@ interface TreeNodeProps {
   setExcludedDirs: (dirs: string[]) => void;
   isRoot?: boolean;
   parentIsChecked?: boolean;
+  isProOnly?: boolean;
+  userIsPro?: boolean;
 }
 
 export const TreeNode = ({
@@ -22,6 +24,8 @@ export const TreeNode = ({
   setExcludedDirs,
   isRoot = false,
   parentIsChecked = false,
+  isProOnly = false,
+  userIsPro = true,
 }: TreeNodeProps) => {
   const [expanded, setExpanded] = useState(false);
   const [children, setChildren] = useState<DirEntry[]>([]);
@@ -47,6 +51,11 @@ export const TreeNode = ({
   };
 
   const toggleCheck = () => {
+    if (isProOnly && !userIsPro) {
+      alert("Searching this drive is a Pro feature.");
+      return;
+    }
+
     if (parentIsChecked) {
       if (isEffectivelyChecked) {
         // Exclude it
@@ -122,6 +131,20 @@ export const TreeNode = ({
         >
           {name}
         </span>
+        {isProOnly && !userIsPro && (
+          <span
+            style={{
+              fontSize: "0.65rem",
+              background: "var(--brand-primary)",
+              color: "white",
+              padding: "2px 5px",
+              borderRadius: "4px",
+              marginLeft: "4px",
+            }}
+          >
+            👑 PRO
+          </span>
+        )}
       </div>
       {expanded && (
         <div>
@@ -135,6 +158,8 @@ export const TreeNode = ({
               excludedDirs={excludedDirs}
               setExcludedDirs={setExcludedDirs}
               parentIsChecked={isEffectivelyChecked}
+              isProOnly={isProOnly}
+              userIsPro={userIsPro}
             />
           ))}
         </div>

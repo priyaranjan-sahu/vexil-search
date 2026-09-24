@@ -2,17 +2,25 @@ import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { TreeNode } from "./TreeNode";
 import { useSearchStore } from "../store/searchStore";
+export interface DriveInfo {
+  path: string;
+  name: string;
+  is_pro_only: boolean;
+}
 
 export const DirectoryTree = () => {
   const customDirs = useSearchStore((state) => state.customDirs);
   const setCustomDirs = useSearchStore((state) => state.setCustomDirs);
   const excludedDirs = useSearchStore((state) => state.excludedDirs);
   const setExcludedDirs = useSearchStore((state) => state.setExcludedDirs);
+  const isPro = useSearchStore((state) => state.isPro);
 
-  const [drives, setDrives] = useState<string[]>([]);
+  const [drives, setDrives] = useState<DriveInfo[]>([]);
 
   useEffect(() => {
-    invoke<string[]>("get_system_drives").then(setDrives).catch(console.error);
+    invoke<DriveInfo[]>("get_system_drives")
+      .then(setDrives)
+      .catch(console.error);
   }, []);
 
   return (
@@ -32,14 +40,16 @@ export const DirectoryTree = () => {
       )}
       {drives.map((drive) => (
         <TreeNode
-          key={drive}
-          path={drive}
-          name={drive}
+          key={drive.path}
+          path={drive.path}
+          name={drive.name}
           customDirs={customDirs}
           setCustomDirs={setCustomDirs}
           excludedDirs={excludedDirs}
           setExcludedDirs={setExcludedDirs}
           isRoot={true}
+          isProOnly={drive.is_pro_only}
+          userIsPro={isPro}
         />
       ))}
     </div>

@@ -519,20 +519,58 @@ fn get_index_stats(app_handle: AppHandle) -> Result<usize, String> {
     Ok(count as usize)
 }
 
+use sysinfo::Disks;
+
+#[derive(serde::Serialize)]
+struct DriveInfo {
+    path: String,
+    name: String,
+    is_pro_only: bool,
+}
+
 #[tauri::command]
-fn get_system_drives() -> Result<Vec<String>, String> {
+fn get_system_drives() -> Result<Vec<DriveInfo>, String> {
     let mut drives = Vec::new();
-    for c in b'A'..=b'Z' {
-        let drive = format!("{}:\\", c as char);
-        if std::path::Path::new(&drive).exists() {
-            drives.push(drive);
+    
+    let disks = Disks::new_with_refreshed_list();
+    for disk in disks.list() {
+        let path = disk.mount_point().to_string_lossy().to_string();
+        let name = disk.name().to_string_lossy().to_string();
+        let kind = disk.kind();
+        
+        let is_pro_only = match kind {
+            sysinfo::DiskKind::HDD | sysinfo::DiskKind::SSD => false,
+            _ => true,
+        };
+
+        drives.push(DriveInfo {
+            path: path.clone(),
+            name: if name.is_empty() { path } else { name },
+            is_pro_only,
+        });
+    }
+
+    if drives.is_empty() {
+        for c in b'A'..=b'Z' {
+            let drive = format!("{}:\\", c as char);
+            if std::path::Path::new(&drive).exists() {
+                drives.push(DriveInfo {
+                    path: drive.clone(),
+                    name: drive,
+                    is_pro_only: false,
+                });
+            }
+        }
+        #[cfg(unix)]
+        if std::path::Path::new("/").exists() && drives.is_empty() {
+            drives.push(DriveInfo {
+                path: "/".to_string(),
+                name: "/".to_string(),
+                is_pro_only: false,
+            });
         }
     }
-    // Also include root `/` for unix systems if we are on one, though this looks windows specific.
-    #[cfg(unix)]
-    if std::path::Path::new("/").exists() && drives.is_empty() {
-        drives.push("/".to_string());
-    }
+    
     Ok(drives)
 }
 
