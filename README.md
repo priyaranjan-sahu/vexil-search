@@ -45,6 +45,22 @@ Vexil is compiled into highly optimized native bundles via an automated CI/CD pi
 
 ---
 
+## 🏗️ CI/CD Architecture (For AI Agents / Maintainers)
+
+> [!IMPORTANT]
+> **Source Code Does Not Belong Here!**
+
+This public repository (`vexil-search`) acts **exclusively** as a public mirror for the GitHub Pages marketing site and the automated GitHub Actions CI/CD release pipeline. 
+
+To bypass GitHub Action billing limits on private repositories, the `.github/workflows/builder.yml` in this repository securely checks out the private source code repository (`vexil`) using a `PRIVATE_REPO_TOKEN`. It builds the Universal Binaries and drafts the GitHub Release *here* on the public repository.
+
+**Rules:**
+1. Never push or copy source code (`src`, `src-tauri`, etc.) to this public repository.
+2. The private repository (`vexil`) is the sole source of truth for the codebase.
+3. To trigger a new release, simply run the `builder.yml` workflow on this repository.
+
+---
+
 <div align="center">
 <br/>
 <i>Designed for developers. Built for speed.</i>
