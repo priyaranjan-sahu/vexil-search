@@ -2,18 +2,8 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - 'latest'
   workflow_dispatch:
-    inputs:
-      increment_type:
-        description: 'Version Bump (patch, minor, major)'
-        required: true
-        default: 'patch'
-        type: choice
-        options:
-          - patch
-          - minor
-          - major
 
 jobs:
   prepare-release:
@@ -28,36 +18,20 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Node.js
-        if: github.event_name == 'workflow_dispatch'
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Bump version
+      - name: Force latest tag
         id: bump
         run: |
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             
-            # npm version bumps package.json and creates a commit and tag
-            npm version ${{ github.event.inputs.increment_type }} -m "chore(release): %s"
-            NEW_TAG=$(git describe --tags --abbrev=0)
-            NEW_VERSION=${NEW_TAG#v}
+            # Create or update the 'latest' tag
+            git tag -f latest
             
-            # Sync to tauri.conf.json and Cargo.toml
-            sed -i -E "s/\"version\": \".*\"/\"version\": \"$NEW_VERSION\"/" src-tauri/tauri.conf.json
-            sed -i -E "0,/^version = \".*\"/s/^version = \".*\"/version = \"$NEW_VERSION\"/" src-tauri/Cargo.toml
+            # Push the tag (this updates it if it exists)
+            git push origin -f latest
             
-            git add src-tauri/tauri.conf.json src-tauri/Cargo.toml
-            git commit --amend --no-edit
-            git tag -f $NEW_TAG
-            
-            git push origin HEAD:master
-            git push origin -f $NEW_TAG
-            
-            echo "tag_name=$NEW_TAG" >> $GITHUB_OUTPUT
+            echo "tag_name=latest" >> $GITHUB_OUTPUT
           else
             # If triggered by a pushed tag, just output the pushed tag
             echo "tag_name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
