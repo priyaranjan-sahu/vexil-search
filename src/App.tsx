@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
+import { open } from "@tauri-apps/plugin-opener";
 import "./App.css";
 
 import { DirectoryTree } from "./components/DirectoryTree";
@@ -955,6 +956,51 @@ function App() {
                 Custom Scan Paths
               </label>
               <DirectoryTree />
+            </div>
+
+            <div
+              className="settings-row"
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                borderBottom: "none",
+                paddingBottom: 0,
+              }}
+            >
+              <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
+                <a
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    open(
+                      "https://github.com/priyaranjan-sahu/vexil-search/blob/master/PRIVACY_POLICY.md",
+                    );
+                  }}
+                  style={{
+                    color: "var(--brand-primary)",
+                    textDecoration: "none",
+                    marginRight: "12px",
+                  }}
+                >
+                  Privacy Policy
+                </a>
+                <a
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    open(
+                      "https://github.com/priyaranjan-sahu/vexil-search/blob/master/TERMS_AND_CONDITIONS.md",
+                    );
+                  }}
+                  style={{
+                    color: "var(--brand-primary)",
+                    textDecoration: "none",
+                  }}
+                >
+                  Terms of Service
+                </a>
+              </span>
             </div>
 
             <button
