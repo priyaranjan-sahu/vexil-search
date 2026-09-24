@@ -44,6 +44,8 @@ function App() {
     setTheme,
     shortcut,
     setShortcut,
+    runInBackground,
+    setRunInBackground,
     showSettings,
     setShowSettings,
     showAbout,
@@ -81,6 +83,13 @@ function App() {
       root.classList.add(theme);
     }
   }, [theme]);
+
+  // Sync background running state to backend on mount
+  useEffect(() => {
+    invoke("set_run_in_background", { enable: runInBackground }).catch(
+      console.error,
+    );
+  }, [runInBackground]);
 
   const triggerIndexing = useCallback(async () => {
     try {
@@ -871,6 +880,33 @@ function App() {
         >
           <div className="settings-panel" onClick={(e) => e.stopPropagation()}>
             <h2 className="settings-header">Preferences</h2>
+            <div className="settings-row">
+              <label>Run in Background</label>
+              <div
+                className="settings-controls"
+                style={{ display: "flex", alignItems: "center" }}
+              >
+                <input
+                  type="checkbox"
+                  checked={runInBackground}
+                  onChange={(e) => setRunInBackground(e.target.checked)}
+                  id="bgToggle"
+                  style={{ marginRight: "10px", width: "16px", height: "16px" }}
+                />
+                <label
+                  htmlFor="bgToggle"
+                  style={{
+                    fontSize: "0.85rem",
+                    color: "var(--text-muted)",
+                    cursor: "pointer",
+                    margin: 0,
+                  }}
+                >
+                  Minimize to system tray on close
+                </label>
+              </div>
+            </div>
+
             <div className="settings-row">
               <label>Appearance Theme</label>
               <select

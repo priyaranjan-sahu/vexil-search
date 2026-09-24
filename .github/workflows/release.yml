@@ -4,22 +4,82 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      increment_type:
+        description: 'Version Bump (patch, minor, major)'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
 
 jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag_name: ${{ steps.bump.outputs.tag_name }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Bump version
+        id: bump
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            
+            # npm version bumps package.json and creates a commit and tag
+            npm version ${{ github.event.inputs.increment_type }} -m "chore(release): %s"
+            NEW_TAG=$(git describe --tags --abbrev=0)
+            NEW_VERSION=${NEW_TAG#v}
+            
+            # Sync to tauri.conf.json and Cargo.toml
+            sed -i -E "s/\"version\": \".*\"/\"version\": \"$NEW_VERSION\"/" src-tauri/tauri.conf.json
+            sed -i -E "0,/^version = \".*\"/s/^version = \".*\"/version = \"$NEW_VERSION\"/" src-tauri/Cargo.toml
+            
+            git add src-tauri/tauri.conf.json src-tauri/Cargo.toml
+            git commit --amend --no-edit
+            git tag -f $NEW_TAG
+            
+            git push origin HEAD:master
+            git push origin -f $NEW_TAG
+            
+            echo "tag_name=$NEW_TAG" >> $GITHUB_OUTPUT
+          else
+            # If triggered by a pushed tag, just output the pushed tag
+            echo "tag_name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
   release:
+    needs: prepare-release
     permissions:
       contents: write
     strategy:
       fail-fast: false
       matrix:
         platform: [macos-latest, ubuntu-22.04, windows-latest]
+    
     runs-on: ${{ matrix.platform }}
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.tag_name }}
 
-      - name: Setup Node.js
+      - name: Install Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -34,7 +94,7 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xvfb
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf rpm
 
       - name: Install NPM dependencies
         run: npm ci
@@ -44,8 +104,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: app-v__VERSION__
-          releaseName: 'Vexil Search v__VERSION__'
+          tagName: ${{ needs.prepare-release.outputs.tag_name }}
+          releaseName: 'Vexil Search ${{ needs.prepare-release.outputs.tag_name }}'
           releaseBody: 'See the assets to download this version and install.'
           releaseDraft: true
           prerelease: false

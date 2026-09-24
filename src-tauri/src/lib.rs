@@ -8,11 +8,20 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::sync::mpsc::channel;
 use std::thread;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Emitter, Manager, WindowEvent,
+};
+use std::sync::Mutex;
 
 mod db;
 
 use db::{db_path, open_db, setup_db, SearchResult};
+
+struct AppState {
+    run_in_background: Mutex<bool>,
+}
 
 static INDEX_GEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -591,6 +600,13 @@ fn open_in_explorer(path: String) -> Result<String, String> {
     Ok("Opened".to_string())
 }
 
+#[tauri::command]
+fn set_run_in_background(app_handle: AppHandle, enable: bool) {
+    if let Ok(mut bg) = app_handle.state::<AppState>().run_in_background.lock() {
+        *bg = enable;
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default()
@@ -606,6 +622,33 @@ pub fn run() {
 
     builder
         .setup(|app| {
+            let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&quit_i])?;
+
+            let _tray = TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .menu(&menu)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "quit" => {
+                        app.exit(0);
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                })
+                .build(app)?;
+
             let app_dir = app
                 .path()
                 .app_data_dir()
@@ -637,6 +680,10 @@ pub fn run() {
                 });
             let pool = r2d2::Pool::builder().max_size(4).build(manager).expect("Failed to create DB pool");
             app.manage(pool);
+            
+            app.manage(AppState {
+                run_in_background: Mutex::new(true),
+            });
 
             // Live Radar: Live File System Watcher
             let app_handle = app.handle().clone();
@@ -760,8 +807,20 @@ pub fn run() {
             get_system_drives,
             get_directories,
             open_in_explorer,
-            get_index_stats
+            get_index_stats,
+            set_run_in_background
         ])
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { api, .. } => {
+                let state = window.app_handle().state::<AppState>();
+                let run_in_bg = state.run_in_background.lock().map(|g| *g).unwrap_or(true);
+                if run_in_bg {
+                    let _ = window.hide();
+                    api.prevent_close();
+                }
+            }
+            _ => {}
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

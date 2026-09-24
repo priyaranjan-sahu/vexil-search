@@ -45,6 +45,7 @@ interface SearchState {
   showSettings: boolean;
   showAbout: boolean;
   activeMenu: string | null;
+  runInBackground: boolean;
 
   // Actions
   setQuery: (query: string) => void;
@@ -67,6 +68,7 @@ interface SearchState {
   setShortcut: (shortcut: string) => void;
   setShowSettings: (show: boolean) => void;
   setShowAbout: (show: boolean) => void;
+  setRunInBackground: (run: boolean) => void;
   setActiveMenu: (menu: string | null) => void;
   openResult: (result: SearchResult | string) => void;
   openInExplorer: (path: string) => void;
@@ -97,6 +99,7 @@ export const useSearchStore = create<SearchState>()(
       shortcut: "CommandOrControl+Shift+Space",
       showSettings: false,
       showAbout: false,
+      runInBackground: true,
       activeMenu: null,
 
       setQuery: (query) => set({ query }),
@@ -146,6 +149,12 @@ export const useSearchStore = create<SearchState>()(
       setShortcut: (shortcut) => set({ shortcut }),
       setShowSettings: (showSettings) => set({ showSettings }),
       setShowAbout: (showAbout) => set({ showAbout }),
+      setRunInBackground: (runInBackground) => {
+        set({ runInBackground });
+        invoke("set_run_in_background", { enable: runInBackground }).catch(
+          console.error,
+        );
+      },
       openResult: async (item) => {
         const path = typeof item === "string" ? item : item.path;
         try {
@@ -239,6 +248,7 @@ export const useSearchStore = create<SearchState>()(
         shortcut: state.shortcut,
         customDirs: state.customDirs,
         excludedDirs: state.excludedDirs,
+        runInBackground: state.runInBackground,
       }),
     },
   ),
