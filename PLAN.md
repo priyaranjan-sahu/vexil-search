@@ -55,10 +55,27 @@ Worker scaffolded and tested in-repo (`licensing/worker/`):
 
 ## Phase 3 — Code signing + publication (needs cert/signup + ~$10/mo)
 
-- Azure Trusted Signing (recommended) wired via `bundle.windows.signCommand` +
-  release CI. ~$10/mo vs ~$150-350/yr OV cert.
+- Azure Trusted Signing wired and CI-ready:
+  - `src-tauri/tauri.windows.conf.json` — signed-delivery overlay setting
+    `bundle.windows.signCommand` (object form) → `artifact-signing-cli`, pinned
+    v0.11.0. Only applied on the windows matrix row via
+    `tauri-action args: --config ...`; local/dev builds are untouched.
+  - `.github/workflows/release.yml` — installs the CLI, feeds
+    `AZURE_CLIENT_ID/SECRET/TENANT_ID` secrets, and after bundling runs
+    `scripts/sign-installers.ps1` to sign the WiX `.msi` (Tauri only signs
+    .exe/.dll) and verify every Windows deliverable is signed — a failure
+    aborts the draft release, so unsigned installers never ship.
+- Post-approval, one-time setup (no repo code changes):
+  1. Fill the `<YOUR_...>` placeholders in `tauri.windows.conf.json` with the
+     account + Public Trust certificate profile names; adjust `-e` if not
+     West US 2.
+  2. Add the three `AZURE_*` secrets to the repo (Public Trust profile
+     approval is the ~1-2 week step).
+  3. `cargo build --release` (or `npm run tauri build`) once locally with the
+     secrets + config set, then `scripts/sign-installers.ps1` to smoke-test
+     signing the produced .msi before trusting CI.
 - Publish first real draft release; start SmartScreen reputation grind.
-- Free axios: no feature degradation while unsigned — signing only matters once
+- Free tier: no feature degradation while unsigned — signing only matters once
   charging (Phase 2 live).
 
 ## Phase 4 — Quality bar + differentiator visibility

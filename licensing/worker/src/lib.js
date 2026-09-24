@@ -18,9 +18,7 @@ export function b64encode(bytes) {
 
 export function b64decode(b64) {
   const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return bytes;
+  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
 }
 
 // RFC 8032 Ed25519 sign token matching Vexil's Rust verifier:

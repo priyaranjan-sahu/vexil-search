@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "windows": {
+      "signCommand": {
+        "cmd": "artifact-signing-cli",
+        "args": [
+          "-e",
+          "https://wus2.codesigning.azure.net",
+          "-a",
+          "<YOUR_AZURE_ARTIFACT_SIGNING_ACCOUNT>",
+          "-c",
+          "<YOUR_CERTIFICATE_PROFILE_NAME>",
+          "-d",
+          "Vexil Search",
+          "%1"
+        ]
+      }
+    }
+  }
+}

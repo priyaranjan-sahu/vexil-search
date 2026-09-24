@@ -2,7 +2,7 @@ name: Release
 on:
   push:
     tags:
-      - 'latest'
+      - "latest"
   workflow_dispatch:
 
 jobs:
@@ -41,11 +41,17 @@ jobs:
     needs: prepare-release
     permissions:
       contents: write
+    # Azure Artifact Signing (Azure Trusted Signing) credentials. Only consumed
+    # on windows-latest; keep them in GitHub Secret store.
+    env:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
     strategy:
       fail-fast: false
       matrix:
         platform: [macos-latest, ubuntu-22.04, windows-latest]
-    
+
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout repository
@@ -57,12 +63,16 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
+          cache: "npm"
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Install artifact-signing-cli (Windows signing)
+        if: matrix.platform == 'windows-latest'
+        run: cargo install artifact-signing-cli --version 0.11.0
 
       - name: Install Ubuntu dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -79,8 +89,18 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ needs.prepare-release.outputs.tag_name }}
-          releaseName: 'Vexil Search ${{ needs.prepare-release.outputs.tag_name }}'
-          releaseBody: 'See the assets to download this version and install.'
+          releaseName: "Vexil Search ${{ needs.prepare-release.outputs.tag_name }}"
+          releaseBody: "See the assets to download this version and install."
           releaseDraft: true
           prerelease: false
-          args: ${{ matrix.platform == 'macos-latest' && '--target universal-apple-darwin' || '' }}
+          args: ${{ matrix.platform == 'windows-latest' && format('--config {0}/src-tauri/tauri.windows.conf.json', github.workspace) || matrix.platform == 'macos-latest' && '--target universal-apple-darwin' || '' }}
+
+      # Tauri's bundler only signs .exe/.dll via bundle.windows.signCommand
+      # (overlay config above). The WiX .msi is signed here, and every Windows
+      # deliverable is verified. A failure aborts the job, so the draft release
+      # is never published with an unsigned installer.
+      - name: Sign MSI and verify Windows deliverables
+        if: matrix.platform == 'windows-latest'
+        shell: powershell
+        run: |
+          & "${{ github.workspace }}/scripts/sign-installers.ps1" -Root "${{ github.workspace }}"
