@@ -1,10 +1,11 @@
+mod content;
+pub mod license;
 mod security;
 
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use rusqlite::params;
 use serde::Serialize;
 use std::fs;
-use std::io::Read;
 use std::path::PathBuf;
 use std::sync::mpsc::channel;
 use std::sync::Mutex;
@@ -41,7 +42,9 @@ fn get_category(is_dir: bool, ext: &str) -> String {
         "mp3" | "wav" | "flac" | "ogg" | "m4a" => "Music".to_string(),
         "mp4" | "mkv" | "avi" | "mov" | "webm" => "Videos".to_string(),
         "png" | "jpg" | "jpeg" | "svg" | "gif" | "webp" => "Images".to_string(),
-        "pdf" | "docx" | "doc" | "txt" | "rtf" => "Documents".to_string(),
+        "pdf" | "docx" | "doc" | "txt" | "rtf" | "xlsx" | "pptx" | "epub" => {
+            "Documents".to_string()
+        }
         "exe" | "msi" | "bat" | "cmd" | "app" | "sh" => "Programs".to_string(),
         "zip" | "tar" | "gz" | "rar" | "7z" => "Archives".to_string(),
         "rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "html" | "css" | "json" | "toml" | "yml" => {
@@ -75,10 +78,20 @@ fn start_indexing(
     let mut valid_custom_dirs = Vec::new();
     if let Some(custom) = &custom_dirs {
         let allowed = security::AllowedRoots::new(true);
+        let is_pro = license::user_is_pro(&app_handle);
         let mut errors = Vec::new();
         for dir in custom {
             match allowed.validate(dir) {
-                Ok(valid) => valid_custom_dirs.push(valid),
+                Ok(valid) => {
+                    if disk_is_pro_only(&valid) && !is_pro {
+                        errors.push(format!(
+                            "'{}': indexing removable drives is a Pro feature",
+                            dir
+                        ));
+                    } else {
+                        valid_custom_dirs.push(valid);
+                    }
+                }
                 Err(e) => errors.push(format!("'{}': {}", dir, e)),
             }
         }
@@ -190,20 +203,8 @@ fn start_indexing(
                             let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
 
                             let mut text_content = String::new();
-                            if file_type.is_file() {
-                                if ["txt", "md", "csv", "json", "rs", "ts", "tsx", "js", "jsx"]
-                                    .contains(&ext)
-                                {
-                                    if let Ok(mut file) = fs::File::open(entry.path()) {
-                                        // Read up to 2000 bytes without allocating the whole file
-                                        let mut buffer = vec![0; 2000];
-                                        if let Ok(bytes_read) = file.read(&mut buffer) {
-                                            buffer.truncate(bytes_read);
-                                            text_content =
-                                                String::from_utf8_lossy(&buffer).into_owned();
-                                        }
-                                    }
-                                }
+                            if file_type.is_file() && content::should_index_content(ext) {
+                                text_content = content::extract_text(entry.path(), ext);
                             }
 
                             let content_str =
@@ -579,6 +580,15 @@ fn get_index_stats(app_handle: AppHandle) -> Result<usize, String> {
 
 use sysinfo::Disks;
 
+fn disk_is_pro_only(path: &std::path::Path) -> bool {
+    for disk in Disks::new_with_refreshed_list().list() {
+        if disk.is_removable() && path.starts_with(disk.mount_point()) {
+            return true;
+        }
+    }
+    false
+}
+
 #[derive(serde::Serialize)]
 struct DriveInfo {
     path: String,
@@ -711,10 +721,14 @@ fn open_in_explorer(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn set_run_in_background(app_handle: AppHandle, enable: bool) {
+fn set_run_in_background(app_handle: AppHandle, enable: bool) -> Result<String, String> {
+    if enable && !license::user_is_pro(&app_handle) {
+        return Err("Running in background is a Pro feature.".to_string());
+    }
     if let Ok(mut bg) = app_handle.state::<AppState>().run_in_background.lock() {
         *bg = enable;
     }
+    Ok("Updated".to_string())
 }
 
 #[tauri::command]
@@ -899,16 +913,8 @@ pub fn run() {
                                 let size = metadata.map(|m| m.len()).unwrap_or(0);
 
                                 let mut text_content = String::new();
-                                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                                    if ["txt", "md", "csv", "json", "rs", "ts", "tsx", "js", "jsx"].contains(&ext) {
-                                        if let Ok(mut file) = fs::File::open(&path) {
-                                            let mut buffer = vec![0; 2000];
-                                            if let Ok(bytes_read) = file.read(&mut buffer) {
-                                                buffer.truncate(bytes_read);
-                                                text_content = String::from_utf8_lossy(&buffer).into_owned();
-                                            }
-                                        }
-                                    }
+                                if content::should_index_content(ext) {
+                                    text_content = content::extract_text(&path, ext);
                                 }
                                 let content_str = format!("{} {} {}", title_str, path_str, text_content);
 
@@ -947,7 +953,10 @@ pub fn run() {
             open_in_explorer,
             get_index_stats,
             set_run_in_background,
-            exit_app
+            exit_app,
+            license::get_license_status,
+            license::install_license,
+            license::get_device_id
         ])
         .on_window_event(|window, event| match event {
             WindowEvent::CloseRequested { api, .. } => {

@@ -39,6 +39,12 @@ sysinfo = "0.32"
 log = "0.4"
 tauri-plugin-wdio-webdriver = { version = "1.4.0", optional = true }
 tauri-plugin-wdio = { version = "1.4.0", optional = true }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+base64 = "0.22"
+rand = "0.8"
+zip = "8.6.0"
+quick-xml = "0.42.0"
+pdf-extract = "0.12.1"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
@@ -46,8 +52,13 @@ tauri-plugin-wdio = { version = "1.4.0", optional = true }
 codegen-units = 1
 lto = true
 opt-level = 3
-panic = "abort"
+# unwind (not abort) so a malformed user file can't silently kill the process
+# while document extraction runs; per-file catch_unwind guards the indexer
+panic = "unwind"
 strip = true
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+[target."cfg(windows)".dependencies]
+winreg = "0.56.0"

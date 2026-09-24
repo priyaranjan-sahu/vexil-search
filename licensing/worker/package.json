@@ -1,0 +1,24 @@
+{
+  "name": "vexil-licenses",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Vexil license issuance worker (Paddle webhook + activation)",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node test/compat.mjs && node test/webhook.mjs"
+  },
+  "dependencies": {
+    "@noble/curves": "^1.9.2",
+    "@noble/hashes": "^1.8.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "workerd@1.20260921.1": true
+  }
+}

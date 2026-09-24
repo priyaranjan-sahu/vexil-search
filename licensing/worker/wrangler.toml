@@ -1,0 +1,18 @@
+# Vexil license issuance worker
+name = "vexil-licenses"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+workers_dev = true
+
+# Replace REPLACE_ME with the ids from:
+#   wrangler kv namespace create CUSTOMERS
+#   wrangler kv namespace create SEATS
+[[kv_namespaces]]
+binding = "CUSTOMERS"
+id = "REPLACE_ME"
+preview_id = "REPLACE_ME"
+
+[[kv_namespaces]]
+binding = "SEATS"
+id = "REPLACE_ME"
+preview_id = "REPLACE_ME"

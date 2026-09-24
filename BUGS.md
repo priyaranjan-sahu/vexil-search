@@ -276,3 +276,99 @@ All 20 items above were resolved in this pass:
   Windows code-signing anywhere in CI — ties into the open "Unknown publisher"
   thread (no free route exists once paid features land; track
   `bundle.windows.signCommand` / Azure Artifact Signing).
+
+---
+
+## Licensing & Pro enforcement (work in progress)
+
+Pro entitlement is now cryptographically verified in Rust instead of a
+localStorage boolean. Status: **skeleton, no real issuance server yet**.
+
+What shipped:
+
+- `src-tauri/src/license.rs` — Ed25519-signed license tokens. Embedded public
+  key (build.rs injects `VEXIL_PUBLIC_KEY` env at build time, else falls back
+  to the committed dev key — production CI must always set the env); payload is
+  `base64(json) + "." + base64(sig)`; payload **v2**: `version` + optional
+  `device_id` bound to a stable machine id (Windows `MachineGuid` via winreg,
+  Linux `/etc/machine-id`, fallback host+os hash). Verifies signature, device
+  binding, format version, expiry, and a **clock-rollback watermark**
+  (`license_seen_at` sidecar; clock < last-valid − 24h ⇒ refused — naive calendar
+  rollback mitigation). New commands `get_license_status` and `install_license`
+  (verify-then-write to `app_data_dir/license.lic`). 15 unit tests incl.
+  tamper/wrong-key/expired/malformed, device-mismatch, newer-version rejection,
+  legacy-payload parse, watermark boundaries, sign→verify roundtrip.
+- `src-tauri/src/bin/sign_license.rs` — self-contained CLI:
+  `gen-key <dir>`, `sign --key --payload --out`, `verify --public --lic`.
+  Private key stays out of git (`src-tauri/licenses/*_private.key` ignored;
+  the `*.key` rule already covers it too); `vexil_public.key` is committed via
+  a `!negation`, and `dev_sample.lic` (a perpetual pro license) is committed so
+  the pipeline is testable from a fresh clone.
+- Pro gates now enforced in Rust, not just UI: `set_run_in_background` rejects
+  non-Pro; `start_indexing` rejects custom dirs under removable drives for free
+  users (`disk_is_pro_only`). The UI-level alerts remain as UX polish
+  (defense in depth), and `isPro` was removed from the persisted zustand store.
+- Frontend: `src/store/licenseStore.ts` (camelCase `LicenseStatus`, plus
+  `install()`), refreshed on App mount; gates in `searchStore`
+  (`addMyPick`, `setRunInBackground`), the settings PRO badge, `DirectoryTree`
+  all read the verified status; Settings now has an inline **Pro License
+  activation** form (paste key → `install_license`, inline errors, no alert).
+
+Still open (by design — picked up when a real issuance server exists):
+
+- No subscription/seat-count/revocation logic beyond the Worker's KV ledger
+  (device seats + term-based `expiresAt`; hard revocation not enforced offline).
+- **Issuance server is scaffolded but not live** — `licensing/worker/` needs
+  your Paddle + Cloudflare accounts, KV namespaces, Worker secrets and a
+  deployed URL; the app is already wired to `VITE_LICENSE_SERVER` +
+  `activate_with_email`. See `licensing/worker/README.md`.
+- The rollback watermark is a _mitigation_ for naive clock changes, not a wall —
+  patching the binary or deleting `license_seen_at` defeats it (any offline
+  license can; the real fix is the server-gated feature in PLAN.md Phase 5).
+- Produce key pair must eventually move to CI/server (KMS); the committed key
+  is a dev-only placeholder (build.rs warns when embedding it).
+
+---
+
+## Content extraction (PDF / DOCX / XLSX / PPTX / EPUB)
+
+New `src-tauri/src/content.rs` replaces the old "first 2000 bytes of 9 text
+types only" indexing. `start_indexing` and the Live Radar watcher now call
+`content::should_index_content(ext)` + `content::extract_text(path, ext)` for
+every indexed file. This is the product differentiator: content search inside
+real documents, which filenames-only tools (Everything) and launchers
+(PowerToys Run) can't do.
+
+What ships:
+
+- Plain text (existing types) capped at 262 KiB bytes read; extracted text
+  truncated to 65,536 chars.
+- **DOCX** — `word/document.xml`, `<w:t>` runs, `<w:p>/<w:tr>/<w:tc>` blocks.
+- **XLSX** — `xl/sharedStrings.xml` + `xl/inlineStrings.xml` (`<t>` under
+  `<si>`/`<row>`).
+- **PPTX** — every `ppt/slides/slide*.xml` (`<a:t>` under `<a:p>`).
+- **EPUB** — every `.xhtml/.html/.htm` entry, text under block elements,
+  `<style>`/`<script>` skipped.
+- **PDF** — `pdf-extract` (pure Rust, no poppler/system dep).
+- Namespace-safe matching: compare the local name after the last `:`.
+- Zip entries capped at 1 MiB each. `.doc`/`.xls`/`.ppt` legacy binary formats
+  are deliberately **not** claimed (separate link).
+- Malformed files can't take the process down: every extraction runs under
+  `catch_unwind` (AssertUnwindSafe), and `[profile.release] panic` flipped from
+  `abort` to `unwind` so a worker-thread panic unwinds instead of killing the
+  whole app (extends #5).
+
+7 new unit tests build real fixtures with `zip::ZipWriter`, a hand-built
+minimal PDF (xref table, `(…) Tj`, Type1 Helvetica) for `pdf-extract`, plus
+extension gating and the char cap. Full suite: `cargo test` 16 passed.
+
+Remaining gaps / follow-ups:
+
+- Legacy binary `.doc`, `.xls`, `.ppt` need a link-time approach (COM/
+  `Word.Application`, or antiword) — deferred; users with old Office files get
+  filename/title-only matches.
+- `.pdf` with scanned/embedded-font pages yields empty text (no OCR) — OCR
+  (tesseract) is a possible later Pro feature.
+- Extraction runs synchronously on the worker thread; a slow or huge file
+  stalls that single block. Batch-level progress already exists; parallelism
+  per-file could come later.

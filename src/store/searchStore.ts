@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { invoke } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
+import { hasProLicense } from "./licenseStore";
 
 let searchSeq = 0;
 let searchTimer: number | undefined;
@@ -46,7 +47,6 @@ interface SearchState {
   showAbout: boolean;
   activeMenu: string | null;
   runInBackground: boolean;
-  isPro: boolean;
 
   // Actions
   setQuery: (query: string) => void;
@@ -101,7 +101,6 @@ export const useSearchStore = create<SearchState>()(
       showAbout: false,
       runInBackground: false,
       activeMenu: null,
-      isPro: false,
 
       setQuery: (query) => set({ query }),
       setActiveMenu: (activeMenu) => set({ activeMenu }),
@@ -115,7 +114,7 @@ export const useSearchStore = create<SearchState>()(
       setSelectedResult: (selectedResult) => set({ selectedResult }),
       addMyPick: (pick) => {
         const state = get();
-        if (!state.isPro && state.myPicks.length >= 5) {
+        if (!hasProLicense() && state.myPicks.length >= 5) {
           alert("Free tier is limited to 5 My Picks. Please upgrade to Pro.");
           return;
         }
@@ -150,7 +149,7 @@ export const useSearchStore = create<SearchState>()(
       setShowSettings: (showSettings) => set({ showSettings }),
       setShowAbout: (showAbout) => set({ showAbout }),
       setRunInBackground: (runInBackground) => {
-        if (runInBackground && !get().isPro) {
+        if (runInBackground && !hasProLicense()) {
           alert("Running in background is a Pro feature.");
           return;
         }
@@ -253,7 +252,6 @@ export const useSearchStore = create<SearchState>()(
         customDirs: state.customDirs,
         excludedDirs: state.excludedDirs,
         runInBackground: state.runInBackground,
-        isPro: state.isPro,
       }),
     },
   ),

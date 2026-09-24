@@ -1,0 +1,7 @@
+{
+  "userId": "dev-sample-user",
+  "plan": "pro",
+  "features": ["background", "removable_drives", "unlimited_picks"],
+  "issuedAt": 1700000000,
+  "expiresAt": null
+}

@@ -40,3 +40,12 @@ scratch_test/
 *.key
 config.json
 credentials.json
+
+# License private keys (kept out of the repo; only the public key is committed)
+src-tauri/licenses/*_private.key
+!src-tauri/licenses/vexil_public.key
+
+# License worker artifacts
+licensing/worker/test/compat.lic
+licensing/worker/.wrangler/
+.wrangler/

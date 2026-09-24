@@ -9,6 +9,7 @@ import "./App.css";
 import { DirectoryTree } from "./components/DirectoryTree";
 import { ResultsTable } from "./components/ResultsTable";
 import { useSearchStore, SearchResult, Theme } from "./store/searchStore";
+import { useLicenseStore } from "./store/licenseStore";
 
 function App() {
   const {
@@ -51,8 +52,70 @@ function App() {
     setShowAbout,
     handleCopyPath,
     handleDelete,
-    isPro,
   } = useSearchStore();
+
+  const pro = useLicenseStore((state) => state.status?.pro ?? false);
+  const licenseStatus = useLicenseStore((state) => state.status);
+  const refreshLicense = useLicenseStore((state) => state.refresh);
+  const licenseInstall = useLicenseStore((state) => state.install);
+
+  const [licInput, setLicInput] = useState("");
+  const [licError, setLicError] = useState<string | null>(null);
+  const [licMessage, setLicMessage] = useState<string | null>(null);
+  const [emailInput, setEmailInput] = useState("");
+  const [emailError, setEmailError] = useState<string | null>(null);
+  const [emailMessage, setEmailMessage] = useState<string | null>(null);
+
+  const activateLicense = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setLicError(null);
+    setLicMessage(null);
+    const trimmed = licInput.trim();
+    if (!trimmed) {
+      setLicError("Paste your license key first.");
+      return;
+    }
+    const error = await licenseInstall(trimmed);
+    if (error) {
+      setLicError(error);
+    } else {
+      setLicMessage("License activated.");
+      setLicInput("");
+    }
+  };
+
+  const activateByEmail = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setEmailError(null);
+    setEmailMessage(null);
+    const email = emailInput.trim();
+    if (!email) {
+      setEmailError("Enter the email you paid with.");
+      return;
+    }
+    const error = await useLicenseStore.getState().activateWithEmail(email);
+    if (error) {
+      setEmailError(error);
+    } else {
+      setEmailMessage("License activated for this device.");
+      setEmailInput("");
+    }
+  };
+
+  // Silently renew a recurring license before it lapses (lazy online check-in).
+  // Offline or a lapsed subscription leaves the current token until expiry.
+  useEffect(() => {
+    const status = useLicenseStore.getState().status;
+    if (!status?.pro || !status.expiresAt || !status.userId) return;
+    const nowSecs = Math.floor(Date.now() / 1000);
+    if (status.expiresAt - nowSecs < 30 * 86_400) {
+      void useLicenseStore.getState().activateWithEmail(status.userId);
+    }
+  }, [pro, licenseStatus]);
+
+  useEffect(() => {
+    refreshLicense();
+  }, [refreshLicense]);
 
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -901,10 +964,133 @@ function App() {
         >
           <div className="settings-panel" onClick={(e) => e.stopPropagation()}>
             <h2 className="settings-header">Preferences</h2>
+
+            <div className="settings-row" style={{ display: "block" }}>
+              <label style={{ display: "block", marginBottom: "8px" }}>
+                Pro License
+                {pro && licenseStatus && (
+                  <span
+                    style={{
+                      fontSize: "0.65rem",
+                      background: "var(--brand-primary)",
+                      color: "white",
+                      padding: "2px 5px",
+                      borderRadius: "4px",
+                      marginLeft: "8px",
+                    }}
+                  >
+                    ACTIVE · {licenseStatus.plan.toUpperCase()}
+                  </span>
+                )}
+              </label>
+              {pro && licenseStatus ? (
+                <div style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
+                  {licenseStatus.userId && (
+                    <div>Licensed to: {licenseStatus.userId}</div>
+                  )}
+                  <div>
+                    Features: {licenseStatus.features.join(", ") || "—"}
+                  </div>
+                  {licenseStatus.expiresAt && (
+                    <div>
+                      Expires:{" "}
+                      {new Date(
+                        licenseStatus.expiresAt * 1000,
+                      ).toLocaleDateString()}
+                    </div>
+                  )}
+                  <div style={{ marginTop: "4px" }}>This device: ✓</div>
+                </div>
+              ) : (
+                <>
+                  <form onSubmit={activateByEmail} className="shortcut-form">
+                    <input
+                      type="email"
+                      value={emailInput}
+                      onChange={(e) => setEmailInput(e.target.value)}
+                      placeholder="Email used at checkout"
+                      style={{ width: "100%" }}
+                    />
+                    <button type="submit">Activate</button>
+                    {emailError && (
+                      <div
+                        style={{
+                          color: "#d9534f",
+                          fontSize: "0.75rem",
+                          marginTop: "6px",
+                        }}
+                      >
+                        {emailError}
+                      </div>
+                    )}
+                    {emailMessage && (
+                      <div
+                        style={{
+                          color: "var(--brand-primary)",
+                          fontSize: "0.75rem",
+                          marginTop: "6px",
+                        }}
+                      >
+                        {emailMessage}
+                      </div>
+                    )}
+                  </form>
+                  <form
+                    onSubmit={activateLicense}
+                    className="shortcut-form"
+                    style={{ marginTop: "8px" }}
+                  >
+                    <input
+                      type="text"
+                      value={licInput}
+                      onChange={(e) => setLicInput(e.target.value)}
+                      placeholder="Or paste a license key"
+                      style={{ width: "100%" }}
+                    />
+                    <button type="submit">Activate</button>
+                    {licError && (
+                      <div
+                        style={{
+                          color: "#d9534f",
+                          fontSize: "0.75rem",
+                          marginTop: "6px",
+                        }}
+                      >
+                        {licError}
+                      </div>
+                    )}
+                    {licMessage && (
+                      <div
+                        style={{
+                          color: "var(--brand-primary)",
+                          fontSize: "0.75rem",
+                          marginTop: "6px",
+                        }}
+                      >
+                        {licMessage}
+                      </div>
+                    )}
+                  </form>
+                  {licenseStatus?.reason &&
+                    licenseStatus.reason !== "No license installed" && (
+                      <div
+                        style={{
+                          color: "var(--text-muted)",
+                          fontSize: "0.75rem",
+                          marginTop: "6px",
+                        }}
+                      >
+                        {licenseStatus.reason}
+                      </div>
+                    )}
+                </>
+              )}
+            </div>
+
             <div className="settings-row">
               <label>
                 Run in Background
-                {!isPro && (
+                {!pro && (
                   <span
                     style={{
                       fontSize: "0.65rem",
