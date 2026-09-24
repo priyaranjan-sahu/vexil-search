@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
-import { open } from "@tauri-apps/plugin-opener";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import "./App.css";
 
 import { DirectoryTree } from "./components/DirectoryTree";
@@ -455,6 +455,18 @@ function App() {
                 }}
               >
                 About Vexil
+              </div>
+              <div className="menu-dropdown-divider"></div>
+              <div
+                className="menu-dropdown-item"
+                onClick={() => {
+                  openUrl(
+                    "https://github.com/priyaranjan-sahu/vexil-search/issues/new",
+                  );
+                  setActiveMenu(null);
+                }}
+              >
+                Send Feedback / Report Bug
               </div>
             </div>
           )}
@@ -973,7 +985,7 @@ function App() {
                   href="#"
                   onClick={(e) => {
                     e.preventDefault();
-                    open(
+                    openUrl(
                       "https://github.com/priyaranjan-sahu/vexil-search/blob/master/PRIVACY_POLICY.md",
                     );
                   }}
@@ -989,7 +1001,7 @@ function App() {
                   href="#"
                   onClick={(e) => {
                     e.preventDefault();
-                    open(
+                    openUrl(
                       "https://github.com/priyaranjan-sahu/vexil-search/blob/master/TERMS_AND_CONDITIONS.md",
                     );
                   }}
@@ -1068,6 +1080,23 @@ function App() {
               }}
             >
               Built with <strong>Tauri</strong> and <strong>React</strong>.
+              <br />
+              <br />
+              <a
+                href="#"
+                onClick={(e) => {
+                  e.preventDefault();
+                  openUrl(
+                    "https://github.com/priyaranjan-sahu/vexil-search/issues/new",
+                  );
+                }}
+                style={{
+                  color: "var(--brand-primary)",
+                  textDecoration: "none",
+                }}
+              >
+                Send Feedback or Report a Bug
+              </a>
             </div>
             <button
               className="shortcut-form button"
