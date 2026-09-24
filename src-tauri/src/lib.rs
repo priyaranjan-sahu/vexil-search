@@ -543,9 +543,15 @@ fn get_system_drives() -> Result<Vec<DriveInfo>, String> {
             _ => true,
         };
 
+        let display_name = if name.is_empty() {
+            path.clone()
+        } else {
+            format!("{} ({})", path, name)
+        };
+
         drives.push(DriveInfo {
             path: path.clone(),
-            name: if name.is_empty() { path } else { name },
+            name: display_name,
             is_pro_only,
         });
     }
