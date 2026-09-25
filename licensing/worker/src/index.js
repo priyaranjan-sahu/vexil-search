@@ -1,6 +1,7 @@
 // Vexil license issuance worker.
 //
-// - POST /webhook    Paddle Billing webhook receiver (verified via HMAC).
+// - POST /webhook    Paddle Billing and Buy Me a Coffee webhook receiver
+//                    (verified via HMAC; provider auto-detected or pinned).
 // - POST /activate   `{ email, deviceId }` -> signed `.lic` token (device-bound).
 // - POST /deactivate `{ email, deviceId }` -> frees a device seat.
 // - GET  /health     liveness.
@@ -8,14 +9,25 @@
 // Secrets (wrangler secret put):
 //   PRIVATE_KEY             base64 32-byte RFC 8032 seed (prod signing key)
 //   PADDLE_WEBHOOK_SECRET   Paddle Billing webhook signing secret
+//   BMAC_WEBHOOK_SECRET     Buy Me a Coffee webhook signing secret
+// [vars]:
+//   WEBHOOK_PROVIDER        "paddle" | "buymeacoffee" | "auto" (default "auto")
+//   BMAC_PRO_PRODUCT_ID     shop item id or title (comma-separated) that grants
+//                           a Pro license; fail-closed when empty
+//   BMAC_SUPPORT_MEMBERSHIPS "true" to also map active memberships to Pro
 // KV namespaces:
-//   CUSTOMERS  customer:<email>  -> { active, recurring, updatedAt }
-//   SEATS      seats:<email>     -> [deviceId, ...]
+//   CUSTOMERS  customer:<email>      -> { active, recurring, updatedAt }
+//              hook:<provider>:<id>  -> dedupe marker (30-day TTL)
+//   SEATS      seats:<email>         -> [deviceId, ...]
 
 import {
   b64decode,
   signToken,
+  normalizeEmail,
   verifyPaddleWebhook,
+  verifyBmcWebhook,
+  paddleEventState,
+  bmcEventState,
   SEAT_LIMIT,
   PLAN,
   FEATURES,
@@ -25,7 +37,8 @@ import {
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Paddle-Signature",
+  "Access-Control-Allow-Headers":
+    "Content-Type, Paddle-Signature, x-signature-sha256, x-bmc-signature",
 };
 
 function jsonOk(data) {
@@ -50,12 +63,6 @@ function nowSecs() {
   return Math.floor(Date.now() / 1000);
 }
 
-function normalizeEmail(email) {
-  return String(email || "")
-    .toLowerCase()
-    .trim();
-}
-
 async function readSeats(env, email) {
   const seats = JSON.parse((await env.SEATS.get(`seats:${email}`)) || "[]");
   return Array.isArray(seats) ? seats : [];
@@ -63,50 +70,74 @@ async function readSeats(env, email) {
 
 async function handleWebhook(request, env) {
   const raw = await request.text();
-  const signature = request.headers.get("Paddle-Signature") || "";
-  const valid = await verifyPaddleWebhook(
-    env.PADDLE_WEBHOOK_SECRET,
-    raw,
-    signature,
-  );
-  if (!valid) return jsonError(401, "Invalid webhook signature");
 
-  const event = JSON.parse(raw);
-  const type = event.event_type || "";
-  const data = event.data || {};
-  const email = normalizeEmail(data.customer?.email);
-  if (!email) return jsonOk({ ignored: true, reason: "no customer email" });
+  const paddleSig = request.headers.get("Paddle-Signature") || "";
+  const bmcSig =
+    request.headers.get("x-signature-sha256") ||
+    request.headers.get("x-bmc-signature") ||
+    "";
 
-  const customerKey = `customer:${email}`;
-  const current = JSON.parse((await env.CUSTOMERS.get(customerKey)) || "null");
-
-  const recurringFromItems = (items) => {
-    const price = Array.isArray(items)
-      ? items.map((i) => i.price).find((p) => p?.billing_cycle?.interval)
-      : null;
-    return price ? price.billing_cycle.interval : null;
-  };
-
-  let next = current;
-  if (type === "transaction.completed") {
-    next = { active: true, recurring: recurringFromItems(data.items) ?? null };
-  } else if (
-    type === "subscription.activated" ||
-    type === "subscription.updated"
-  ) {
-    next = { active: true, recurring: recurringFromItems(data.items) ?? null };
-  } else if (
-    type === "subscription.canceled" ||
-    type === "subscription.past_due" ||
-    type === "subscription.paused" ||
-    type === "subscription.ended"
-  ) {
-    next = { active: false };
+  let provider = String(env.WEBHOOK_PROVIDER || "auto")
+    .toLowerCase()
+    .trim();
+  if (provider === "auto") {
+    if (paddleSig) provider = "paddle";
+    else if (bmcSig) provider = "buymeacoffee";
+    else return jsonError(401, "Missing webhook signature");
   }
 
-  if (next) {
-    next.updatedAt = nowSecs();
-    await env.CUSTOMERS.put(customerKey, JSON.stringify(next));
+  let event;
+  try {
+    event = JSON.parse(raw);
+  } catch {
+    return jsonError(400, "Invalid JSON body");
+  }
+  const type =
+    provider === "paddle" ? event.event_type || "" : event.type || "";
+
+  if (provider === "paddle") {
+    const valid = await verifyPaddleWebhook(
+      env.PADDLE_WEBHOOK_SECRET,
+      raw,
+      paddleSig,
+    );
+    if (!valid) return jsonError(401, "Invalid webhook signature");
+  } else {
+    const valid = await verifyBmcWebhook(env.BMAC_WEBHOOK_SECRET, raw, bmcSig);
+    if (!valid) return jsonError(401, "Invalid webhook signature");
+  }
+
+  // De-duplicate retried deliveries (Paddle and BMAC both attach an event_id).
+  const eventId = String(event.event_id || "").trim();
+  const dedupeKey = eventId ? `hook:${provider}:${eventId}` : null;
+  if (dedupeKey && (await env.CUSTOMERS.get(dedupeKey))) {
+    return jsonOk({ received: true, duplicate: true, type });
+  }
+
+  const next =
+    provider === "paddle"
+      ? paddleEventState(event)
+      : bmcEventState(event, {
+          proProductId: env.BMAC_PRO_PRODUCT_ID,
+          supportMemberships: env.BMAC_SUPPORT_MEMBERSHIPS === "true",
+        });
+
+  if (!next) {
+    return jsonOk({ received: true, ignored: true, type });
+  }
+
+  const customerKey = `customer:${next.email}`;
+  const record = {
+    active: next.active,
+    recurring: next.recurring ?? null,
+    updatedAt: nowSecs(),
+  };
+  await env.CUSTOMERS.put(customerKey, JSON.stringify(record));
+
+  if (dedupeKey) {
+    await env.CUSTOMERS.put(dedupeKey, "1", {
+      expirationTtl: 30 * DAY_SECS,
+    });
   }
   return jsonOk({ received: true, type });
 }

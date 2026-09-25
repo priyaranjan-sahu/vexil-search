@@ -1,6 +1,7 @@
 use std::path::Path;
 
 fn main() {
+    tauri_build::build();
     println!("cargo:rerun-if-changed=licenses/vexil_public.key");
     println!("cargo:rerun-if-env-changed=VEXIL_PUBLIC_KEY");
 

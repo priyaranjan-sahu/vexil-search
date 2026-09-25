@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "test": "node test/compat.mjs && node test/webhook.mjs"
+    "test": "node test/compat.mjs && node test/webhook.mjs && node test/webhook-bmc.mjs"
   },
   "dependencies": {
     "@noble/curves": "^1.9.2",

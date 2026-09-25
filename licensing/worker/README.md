@@ -1,14 +1,18 @@
 # vexil-licenses — Cloudflare Worker
 
-Serverless license issuance for Vexil. Paddle handles checkout/MoR taxes and
-sends webhooks here; the Worker records who paid, then signs device-bound
-Ed25519 licenses with the app's existing verifier format.
+Serverless license issuance for Vexil. Checkout/monetization can run through
+**Paddle** (Merchant of Record — owns sales-tax/fraud liability) and/or **Buy Me
+a Coffee** (No-code $0 on-ramp — you own VAT/GST, so Paddle is the long-term
+home). Both send webhooks here; the Worker verifies them, records who paid,
+then signs device-bound Ed25519 licenses with the app's existing verifier
+format. The webhook provider is auto-detected from the signature header
+(`WEBHOOK_PROVIDER = "auto"`).
 
 Endpoints:
 
 | Method | Path          | Purpose                                                |
 | ------ | ------------- | ------------------------------------------------------ |
-| POST   | `/webhook`    | Paddle Billing webhook (HMAC-verified)                 |
+| POST   | `/webhook`    | Paddle **and** Buy Me a Coffee webhook (HMAC-verified) |
 | POST   | `/activate`   | `{email, deviceId}` → signed `.lic` token, seat-linked |
 | POST   | `/deactivate` | `{email, deviceId}` → free a seat                      |
 | GET    | `/health`     | liveness                                               |
@@ -16,7 +20,15 @@ Endpoints:
 Safety properties:
 
 - **You cannot mint a free license.** `/activate` only honors emails recorded by
-  a verified Paddle webhook. Unverified → `403`.
+  a verified webhook (Paddle or BMAC). Unverified → `403`.
+- **BMAC fail-closed.** A BMAC purchase only grants Pro when it contains an item
+  matching `BMAC_PRO_PRODUCT_ID`. Donations, and purchases of other items, are
+  ignored — a $1 coffee can never mint a Pro license.
+- **Refunds revoke.** `extra_purchase.refunded` (and Paddle cancellation
+  events) flip the customer record to inactive.
+- **Idempotent webhooks.** Both providers retry failed deliveries; retried
+  events are dropped via a KV dedupe marker (`hook:<provider>:<event_id>`,
+  30-day TTL).
 - **Device-bound.** A token carries `deviceId`; the app refuses it on any other
   machine (`license.rs`).
 - **Seat cap.** Max 3 devices per email (constant `SEAT_LIMIT` in `src/lib.js`).
@@ -66,11 +78,21 @@ wrangler secret put PRIVATE_KEY
 # paste the base64 seed printed by gen-key.mjs
 ```
 
-Set the webhook secret (placeholder now; real value comes from Paddle below):
+Set the webhook secrets (placeholders now; real values come from Paddle/BMAC
+below):
 
 ```bash
 wrangler secret put PADDLE_WEBHOOK_SECRET
+wrangler secret put BMAC_WEBHOOK_SECRET
 ```
+
+The webhook behaviour is configured via `[vars]` in `wrangler.toml`:
+
+| Var                        | Default   | Meaning                                                                               |
+| -------------------------- | --------- | ------------------------------------------------------------------------------------- |
+| `WEBHOOK_PROVIDER`         | `"auto"`  | `paddle` / `buymeacoffee` / `auto` (auto-detects by header)                           |
+| `BMAC_PRO_PRODUCT_ID`      | `""`      | BMAC shop item id **or** title (comma-separated) that grants Pro; empty = fail closed |
+| `BMAC_SUPPORT_MEMBERSHIPS` | `"false"` | `"true"` to map active BMAC memberships to Pro too                                    |
 
 Deploy:
 
@@ -101,6 +123,32 @@ curl http://localhost:8787/health   # {"status":"ok"}
 4. Create a product: Pro tier. Add prices: monthly subscription, yearly
    subscription, and a one-time "Lifetime Pro" price.
 
+## First-time setup (Buy Me a Coffee)
+
+1. Create your BMAC page → **Shop** → add an _Extra_ item, e.g.
+   **"Vexil Pro License"** (one-time, ~$20).
+2. Integrations → **Webhooks** → **Add destination**:
+   URL `https://vexil-licenses.<your-subdomain>.workers.dev/webhook`.
+3. Copy the webhook's **signing secret**, then:
+   `wrangler secret put BMAC_WEBHOOK_SECRET`.
+4. Set `BMAC_PRO_PRODUCT_ID` in `wrangler.toml` to your item's **id** or
+   **title** (title matching is case-insensitive; comma-separate for several),
+   then `npm run deploy`.
+
+   > The BMAC webhook payload identifies items only by their `id` and `title`
+   > inside `data.extras[]` — there is no product-code field. Use the numeric id
+   > if you have it (shown in the Shop item URL), otherwise the exact title.
+
+5. Optional: set `BMAC_SUPPORT_MEMBERSHIPS = "true"` to let active memberships
+   also mint/keep Pro licenses (a monthly supporter gets Pro while the
+   membership is `active`; cancelled/paused revokes).
+
+**BMAC is not a Merchant of Record.** There is no `live_mode` filtering on the
+Worker — it trusts the signature. For a paid product, disable test mode before
+going live and treat the webhook events themselves as the source of truth
+(they carry `live_mode` if you ever want to filter). Paddle remains the
+long-term checkout because it handles VAT/GST, fraud, and chargebacks for you.
+
 ## End-to-end test (sandbox)
 
 1. Paddle sandbox: buy the monthly subscription as a test customer (no real money).
@@ -116,13 +164,13 @@ curl http://localhost:8787/health   # {"status":"ok"}
 - App build: set `VITE_LICENSE_SERVER` to the deployed worker URL, and
   `VEXIL_PUBLIC_KEY` to `licenses-prod/vexil_public.key` in CI. Never bake the
   sandbox/dev key into a shipped build.
-- Keep `PADDLE_WEBHOOK_SECRET` and `PRIVATE_KEY` rotating via them only in
-  `wrangler secret` (never in `wrangler.toml`).
+- Keep `PADDLE_WEBHOOK_SECRET`, `BMAC_WEBHOOK_SECRET`, and `PRIVATE_KEY`
+  rotating via `wrangler secret` only (never in `wrangler.toml`).
 
 ## Tests
 
 ```bash
-npm test   # cross-impl crypto compat + webhook signature verification
+npm test   # cross-impl crypto compat + Paddle + BMAC webhook verification
 ```
 
 Deployed-worker smoke test:

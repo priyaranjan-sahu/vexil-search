@@ -16,3 +16,15 @@ preview_id = "REPLACE_ME"
 binding = "SEATS"
 id = "REPLACE_ME"
 preview_id = "REPLACE_ME"
+
+[vars]
+# "paddle" | "buymeacoffee" | "auto" (auto detects the provider by signature
+# header; recommended as the default).
+WEBHOOK_PROVIDER = "auto"
+# Identifies the Buy Me a Coffee shop item that grants a Pro license. Matched
+# against each purchased item's id or title (case-insensitive). Comma-separated
+# for multiple items. Leave empty to fail closed: no BMAC purchase can grant Pro.
+BMAC_PRO_PRODUCT_ID = ""
+# Set to "true" to also map active BMAC memberships to Pro licenses (started/
+# updated/cancelled/paused webhooks). Disabled by default.
+BMAC_SUPPORT_MEMBERSHIPS = "false"

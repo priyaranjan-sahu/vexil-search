@@ -41,6 +41,12 @@ export function verifyToken(token, publicKeyBytes) {
   return JSON.parse(new TextDecoder().decode(body));
 }
 
+export function normalizeEmail(email) {
+  return String(email || "")
+    .toLowerCase()
+    .trim();
+}
+
 // Paddle Billing webhook verification.
 // Header `Paddle-Signature: ts=<ts>;h1=<hex>` where the HMAC-SHA256 of the
 // message `<ts>:<rawBody>` (hex-encoded HMAC) equals h1.
@@ -66,6 +72,123 @@ export async function verifyPaddleWebhook(secret, rawBody, signatureHeader) {
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
   return hex === h1;
+}
+
+// Buy Me a Coffee webhook verification.
+// Header `x-signature-sha256: <hex>` where the value is the hex HMAC-SHA256
+// of the raw request body keyed with the webhook's per-webhook signing
+// secret. An `x-bmc-signature` fallback is accepted by the caller.
+// Both digests are fixed-length lowercase hex (64 chars for SHA-256), so a
+// length-gated `===` behaves like a constant-time compare (Paddle precedent).
+export async function verifyBmcWebhook(secret, rawBody, signatureHeader) {
+  if (!signatureHeader) return false;
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const mac = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(rawBody),
+  );
+  const expected = [...new Uint8Array(mac)]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  return expected === signatureHeader.trim().toLowerCase();
+}
+
+// Maps a Paddle Billing webhook event to a customer-record update.
+// Returns { email, active, recurring } or null when nothing changed.
+export function paddleEventState(event) {
+  const type = event.event_type || "";
+  const data = event.data || {};
+  const email = normalizeEmail(data.customer?.email);
+  if (!email) return null;
+
+  const items = event.data?.items;
+  const price = Array.isArray(items)
+    ? items.map((i) => i.price).find((p) => p?.billing_cycle?.interval)
+    : null;
+  const recurring = price ? price.billing_cycle.interval : null;
+
+  if (
+    type === "transaction.completed" ||
+    type === "subscription.activated" ||
+    type === "subscription.updated"
+  ) {
+    return { email, active: true, recurring };
+  }
+  if (
+    type === "subscription.canceled" ||
+    type === "subscription.past_due" ||
+    type === "subscription.paused" ||
+    type === "subscription.ended"
+  ) {
+    return { email, active: false };
+  }
+  return null;
+}
+
+// Parses a comma-separated list of product id/title matchers into entries.
+export function parseBmcProductSpec(spec) {
+  return String(spec || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+// True when one of the purchased `extras` items matches the product spec.
+// Matches against the item's numeric id OR its title (case-insensitive).
+export function bmcMatchesProduct(data, productSpec) {
+  const entries = parseBmcProductSpec(productSpec);
+  if (entries.length === 0) return false; // fail closed: nothing can grant Pro
+  const items = Array.isArray(data?.extras) ? data.extras : [];
+  return items.some((item) => {
+    const idMatch = entries.includes(String(item.id));
+    const titleMatch = entries.some(
+      (e) => String(item.title || "").toLowerCase() === e.toLowerCase(),
+    );
+    return idMatch || titleMatch;
+  });
+}
+
+// Maps a Buy Me a Coffee webhook event to a customer-record update.
+// Only configured `extra_purchase` events grant/revoke Pro; donations and
+// other events return null and are ignored. Memberships are only honored
+// when opts.supportMemberships is true.
+// Returns { email, active, recurring } or null when ignored.
+export function bmcEventState(event, opts = {}) {
+  const type = event.type || "";
+  const data = event.data || {};
+  const email = normalizeEmail(data.supporter_email);
+  if (!email) return null;
+
+  const productSpec = parseBmcProductSpec(opts.proProductId);
+
+  if (type === "extra_purchase.created") {
+    if (!bmcMatchesProduct(data, productSpec)) return null;
+    return { email, active: true, recurring: null };
+  }
+  if (type === "extra_purchase.refunded") {
+    if (!bmcMatchesProduct(data, productSpec)) return null;
+    return { email, active: false };
+  }
+
+  if (opts.supportMemberships === true && type.startsWith("membership.")) {
+    const recurring = data.duration_type === "year" ? "year" : "month";
+    if (type === "membership.started" || type === "membership.updated") {
+      return data.status === "active"
+        ? { email, active: true, recurring }
+        : { email, active: false };
+    }
+    if (type === "membership.cancelled" || type === "membership.paused") {
+      return { email, active: false };
+    }
+  }
+  return null;
 }
 
 // Length of a PVO-pricing subscription term in days (monthly / yearly / one-time).
