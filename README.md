@@ -1,6 +1,6 @@
 # Vexil Search 🔍
 
-Vexil Search is a blazing-fast, privacy-first desktop file search application built with Tauri 2, React 19, and Rust. It leverages SQLite's FTS5 engine for instant full-text search capabilities across your local filesystem.
+Vexil Search is a blazing-fast, privacy-first desktop file search application built with Tauri 2, React 19, and Rust. It leverages local AI embedding models and SQLite's FTS5 engine to provide instant, semantic full-text search capabilities across your local filesystem—without ever sending your private data to the cloud.
 
 ---
 
