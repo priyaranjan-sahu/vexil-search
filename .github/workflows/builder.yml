@@ -6,7 +6,53 @@ on:
     branches: [ "master" ]
 
 jobs:
+  quality-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Private Repository
+        uses: actions/checkout@v4
+        with:
+          repository: priyaranjan-sahu/vexil
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: .
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Install NPM dependencies
+        run: npm ci
+
+      - name: Frontend Security Audit (NPM)
+        run: npm audit --audit-level=high || true
+
+      - name: Backend Security Audit (Cargo)
+        run: cargo install cargo-audit && cargo audit || true
+
+      - name: Frontend Type Checking
+        run: npx tsc --noEmit
+
+      - name: Rust Formatting
+        run: cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
+
+      - name: Rust Linter (Clippy)
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+
+      - name: Frontend Unit Tests
+        run: npm run test:unit --if-present
+
+      - name: Backend Unit Tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
   build-and-release:
+    needs: quality-gates
     permissions:
       contents: write
     strategy:
@@ -61,6 +107,7 @@ jobs:
           args: ${{ matrix.platform == 'macos-latest' && '--target universal-apple-darwin' || '' }}
 
   build-android:
+    needs: quality-gates
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Private Repository
@@ -107,6 +154,7 @@ jobs:
           files: src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk
 
   build-ios:
+    needs: quality-gates
     runs-on: macos-latest
     steps:
       - name: Checkout Private Repository
@@ -138,6 +186,7 @@ jobs:
         
       # Note: iOS .ipa files require Apple Developer code signing certificates to run on physical devices.
       # We upload the unsigned .app or .ipa depending on Tauri's output configuration.
+
 
 
 
