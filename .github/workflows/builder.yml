@@ -43,6 +43,10 @@ jobs:
       - name: Install NPM dependencies
         run: npm ci
 
+      - name: Build Desktop App (PR Test)
+        if: github.event_name == 'pull_request'
+        run: npm run tauri build ${{ matrix.platform == 'macos-latest' && '-- --target universal-apple-darwin' || '' }}
+
       - name: Build Tauri app
         if: github.event_name != 'pull_request'
         uses: tauri-apps/tauri-action@v0
@@ -134,5 +138,6 @@ jobs:
         
       # Note: iOS .ipa files require Apple Developer code signing certificates to run on physical devices.
       # We upload the unsigned .app or .ipa depending on Tauri's output configuration.
+
 
 
