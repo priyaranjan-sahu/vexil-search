@@ -50,16 +50,14 @@ impl AllowedRoots {
         // Strip Windows UNC prefix if present
         if cfg!(windows) {
             let canon_str = canon.to_string_lossy().to_string();
-            if canon_str.starts_with(r"\\?\") {
-                canon = PathBuf::from(&canon_str[4..]);
+            if let Some(stripped) = canon_str.strip_prefix(r"\\?\") {
+                canon = PathBuf::from(stripped);
             }
         }
 
         // 4. Enforce allow-list unless whole-disk mode
-        if !self.allow_whole_disk {
-            if !self.roots.iter().any(|r| canon.starts_with(r)) {
-                return Err(SecurityError::OutsideAllowedRoots);
-            }
+        if !self.allow_whole_disk && !self.roots.iter().any(|r| canon.starts_with(r)) {
+            return Err(SecurityError::OutsideAllowedRoots);
         }
 
         Ok(canon)

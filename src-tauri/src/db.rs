@@ -18,11 +18,11 @@ use r2d2_sqlite::SqliteConnectionManager;
 
 pub type DbPool = r2d2::Pool<SqliteConnectionManager>;
 
-pub fn db_path(app_dir: &PathBuf) -> PathBuf {
+pub fn db_path(app_dir: &std::path::Path) -> PathBuf {
     app_dir.join("vexil_index.db")
 }
 
-pub fn open_db(path: &PathBuf) -> SqlResult<Connection> {
+pub fn open_db(path: &std::path::Path) -> SqlResult<Connection> {
     let conn = Connection::open(path)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
