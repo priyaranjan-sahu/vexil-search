@@ -52,3 +52,78 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.platform == 'macos-latest' && '--target universal-apple-darwin' || '' }}
+
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Private Repository
+        uses: actions/checkout@v4
+        with:
+          repository: priyaranjan-sahu/vexil
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: .
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - name: Install NPM dependencies
+        run: npm ci
+
+      - name: Build Android APK
+        run: npm run tauri android build -- --apk
+        
+      # Upload the APK to the latest release
+      - name: Upload APK to Release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: latest
+          files: src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk
+
+  build-ios:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Private Repository
+        uses: actions/checkout@v4
+        with:
+          repository: priyaranjan-sahu/vexil
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: .
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,x86_64-apple-ios,aarch64-apple-ios-sim
+
+      - name: Install NPM dependencies
+        run: npm ci
+
+      - name: Build iOS App
+        run: npm run tauri ios build
+        
+      # Note: iOS .ipa files require Apple Developer code signing certificates to run on physical devices.
+      # We upload the unsigned .app or .ipa depending on Tauri's output configuration.
