@@ -789,7 +789,7 @@ pub fn run() {
                 .app_data_dir()
                 .unwrap_or_else(|_| PathBuf::from("."));
             setup_db(&app_dir).expect("Failed to initialize database");
-            
+
             // Create connection pool (4 connections for concurrent reads)
             let manager = r2d2_sqlite::SqliteConnectionManager::file(db_path(&app_dir))
                 .with_init(|c| {
@@ -815,7 +815,7 @@ pub fn run() {
                 });
             let pool = r2d2::Pool::builder().max_size(4).build(manager).expect("Failed to create DB pool");
             app.manage(pool);
-            
+
             app.manage(AppState {
                 run_in_background: Mutex::new(false),
             });
@@ -830,11 +830,11 @@ pub fn run() {
                     Ok(w) => w,
                     Err(_) => return,
                 };
-                
+
                 if let Some(dl_dir) = dirs::download_dir() {
                     let _ = watcher.watch(&dl_dir, RecursiveMode::Recursive);
                 }
-                
+
                 let mut pending_paths = std::collections::HashSet::new();
                 let mut pending_removes = std::collections::HashSet::new();
                 loop {
@@ -972,4 +972,3 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
-
