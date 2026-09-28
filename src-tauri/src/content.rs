@@ -158,15 +158,15 @@ fn collect_text(xml: &str, scopes: &[&str], blocks: &[&str], skip: &[&str]) -> S
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                 let qname = e.name();
                 let name = local(qname.as_ref());
-                if scopes.iter().any(|s| *s == name) {
+                if scopes.contains(&name) {
                     scope_depth += 1;
                 }
-                if skip.iter().any(|s| *s == name) {
+                if skip.contains(&name) {
                     skip_depth += 1;
                 }
                 if skip_depth == 0
                     && (scopes.is_empty() || scope_depth > 0)
-                    && blocks.iter().any(|s| *s == name)
+                    && blocks.contains(&name)
                 {
                     out.push('\n');
                 }
@@ -174,16 +174,16 @@ fn collect_text(xml: &str, scopes: &[&str], blocks: &[&str], skip: &[&str]) -> S
             Ok(Event::End(ref e)) => {
                 let qname = e.name();
                 let name = local(qname.as_ref());
-                if skip.iter().any(|s| *s == name) {
+                if skip.contains(&name) {
                     skip_depth = skip_depth.saturating_sub(1);
                 }
-                if scopes.iter().any(|s| *s == name) {
+                if scopes.contains(&name) {
                     scope_depth = scope_depth.saturating_sub(1);
                 }
             }
             Ok(Event::Text(ref t)) => {
                 if skip_depth == 0 && (scopes.is_empty() || scope_depth > 0) {
-                    if let Ok(s) = unescape(&t) {
+                    if let Ok(s) = unescape(t) {
                         out.push_str(&s);
                     }
                 }

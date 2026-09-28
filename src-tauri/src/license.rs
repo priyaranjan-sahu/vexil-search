@@ -128,7 +128,7 @@ pub fn verifying_key_from_bytes(bytes: &[u8]) -> Result<VerifyingKey, String> {
 
 pub fn public_key() -> Result<VerifyingKey, String> {
     let bytes = B64
-        .decode(&PUBLIC_KEY_B64.trim().to_string())
+        .decode(PUBLIC_KEY_B64.trim())
         .map_err(|e| format!("Embedded public key is not valid base64: {e}"))?;
     verifying_key_from_bytes(&bytes)
 }

@@ -512,10 +512,7 @@ fn search_files(
             .split_whitespace()
             .filter(|term| alnum_len(term) >= 3)
             .map(|term| {
-                let safe_term = term.replace(
-                    |c: char| matches!(c, '"' | '*' | '(' | ')' | '+' | '-' | '~'),
-                    "",
-                );
+                let safe_term = term.replace(['"', '*', '(', ')', '+', '-', '~'], "");
                 format!("\"{}\"", safe_term)
             })
             .collect();
@@ -677,7 +674,7 @@ fn get_directories(path: String) -> Result<Vec<DirEntry>, String> {
             }
         }
     }
-    dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    dirs.sort_by_key(|a| a.name.to_lowercase());
     Ok(dirs)
 }
 
@@ -763,11 +760,8 @@ pub fn run() {
             let _tray = TrayIconBuilder::new()
                 .icon(tray_icon)
                 .menu(&menu)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "quit" => {
-                        app.exit(0);
-                    }
-                    _ => {}
+                .on_menu_event(|app, event| if event.id.as_ref() == "quit" {
+                    app.exit(0);
                 })
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click {
@@ -958,16 +952,13 @@ pub fn run() {
             license::install_license,
             license::get_device_id
         ])
-        .on_window_event(|window, event| match event {
-            WindowEvent::CloseRequested { api, .. } => {
-                let state = window.app_handle().state::<AppState>();
-                let run_in_bg = state.run_in_background.lock().map(|g| *g).unwrap_or(true);
-                if run_in_bg {
-                    let _ = window.hide();
-                    api.prevent_close();
-                }
+        .on_window_event(|window, event| if let WindowEvent::CloseRequested { api, .. } = event {
+            let state = window.app_handle().state::<AppState>();
+            let run_in_bg = state.run_in_background.lock().map(|g| *g).unwrap_or(true);
+            if run_in_bg {
+                let _ = window.hide();
+                api.prevent_close();
             }
-            _ => {}
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
