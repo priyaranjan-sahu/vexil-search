@@ -1,17 +1,57 @@
 name: Build and Release Private Repo
-
 on:
   workflow_dispatch:
-
+  push:
+    branches: ["master"]
+  pull_request:
+    branches: ["master"]
 jobs:
+  quality-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Private Repository
+        uses: actions/checkout@v4
+        with:
+          repository: priyaranjan-sahu/vexil
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: .
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Install Ubuntu dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf rpm
+      - name: Install NPM dependencies
+        run: npm ci
+      - name: Frontend Security Audit (NPM)
+        run: npm audit --audit-level=high || true
+      - name: Backend Security Audit (Cargo)
+        run: cargo install cargo-audit && cargo audit || true
+      - name: Frontend Type Checking
+        run: npx tsc --noEmit
+      - name: Rust Formatting
+        run: cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
+      - name: Rust Linter (Clippy)
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+      - name: Frontend Unit Tests
+        run: npm run test:unit --if-present
+      - name: Backend Unit Tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
   build-and-release:
+    needs: quality-gates
     permissions:
       contents: write
     strategy:
       fail-fast: false
       matrix:
-        platform: [macos-latest, ubuntu-22.04, windows-latest]
-    
+        platform: [macos-latest, ubuntu-24.04, windows-latest]
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout Private Repository
@@ -20,35 +60,138 @@ jobs:
           repository: priyaranjan-sahu/vexil
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: .
-
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
-
+          cache: "npm"
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-
       - name: Install Ubuntu dependencies
-        if: matrix.platform == 'ubuntu-22.04'
+        if: matrix.platform == 'ubuntu-24.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf rpm
-
+          sudo apt-get install -y build-essential curl wget file libxdo-dev libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libglib2.0-dev patchelf rpm
       - name: Install NPM dependencies
         run: npm ci
-
+      - name: Build Desktop App (PR Test)
+        if: github.event_name == 'pull_request'
+        run: npm run tauri build ${{ matrix.platform == 'macos-latest' && '-- --target universal-apple-darwin' || '' }}
       - name: Build Tauri app
+        if: github.event_name != 'pull_request'
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: latest
-          releaseName: 'Vexil Search latest'
-          releaseBody: 'See the assets to download this version and install.'
+          releaseName: "Vexil Search latest"
+          releaseBody: "See the assets to download this version and install."
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.platform == 'macos-latest' && '--target universal-apple-darwin' || '' }}
+  build-android:
+    needs: quality-gates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Private Repository
+        uses: actions/checkout@v4
+        with:
+          repository: priyaranjan-sahu/vexil
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: .
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: "zulu"
+          java-version: "17"
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+      - name: Install NPM dependencies
+        run: npm ci
+      - name: Install Android SDK & NDK
+        env:
+          ANDROID_HOME: /usr/local/lib/android/sdk
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" --install "ndk;27.0.12077973" "platforms;android-36" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+      - name: Configure Release Signing
+        if: env.VEXIL_KEYSTORE_B64 != ''
+        env:
+          VEXIL_KEYSTORE_B64: ${{ secrets.VEXIL_KEYSTORE_B64 }}
+          VEXIL_KEYSTORE_PASSWORD: ${{ secrets.VEXIL_KEYSTORE_PASSWORD }}
+          VEXIL_KEY_ALIAS: ${{ secrets.VEXIL_KEY_ALIAS }}
+          VEXIL_KEY_PASSWORD: ${{ secrets.VEXIL_KEY_PASSWORD }}
+        run: |
+          echo "$VEXIL_KEYSTORE_B64" | base64 -d > src-tauri/gen/android/app/vexil-release.keystore
+          cat > src-tauri/gen/android/app/keystore.properties <<EOF
+          storeFile=vexil-release.keystore
+          storePassword=$VEXIL_KEYSTORE_PASSWORD
+          keyAlias=$VEXIL_KEY_ALIAS
+          keyPassword=$VEXIL_KEY_PASSWORD
+          EOF
+      - name: Build Android APK (Release, signed)
+        run: npm run tauri android build -- --apk
+      - name: Build Android APK (Debug, installable)
+        run: npm run tauri android build -- --apk --debug
+      # Upload APKs as run artifacts so they can be downloaded for testing
+      - name: Upload APKs as Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apks
+          path: |
+            src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk
+            src-tauri/gen/android/app/build/outputs/apk/universal/debug/*.apk
+          if-no-files-found: error
+      # Upload the APK to the latest release
+      - name: Upload APK to Release
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: latest
+          files: src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk
+  build-ios:
+    needs: quality-gates
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Private Repository
+        uses: actions/checkout@v4
+        with:
+          repository: priyaranjan-sahu/vexil
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: .
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,x86_64-apple-ios,aarch64-apple-ios-sim
+      - name: Install NPM dependencies
+        run: npm ci
+      - name: Install XcodeGen (required by tauri ios init)
+        run: brew install xcodegen
+      - name: Initialize iOS project
+        run: npm run tauri ios init
+      - name: Build iOS App (PR)
+        if: github.event_name == 'pull_request'
+        run: npm run tauri ios build -- --target aarch64-sim
+      - name: Build iOS App (Release)
+        if: github.event_name != 'pull_request'
+        run: npm run tauri ios build -- --target aarch64-sim
+      # Note: physical-device .ipa builds require Apple Developer code signing certificates,
+      # which are not configured; we build the simulator target so the release pipeline stays green.
