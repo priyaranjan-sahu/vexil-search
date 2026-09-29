@@ -18,6 +18,12 @@ src-tauri/gen/schemas
 rustup-init.exe
 scratch_test/
 
+# Sample/screenshot demo data (fake files, not source)
+demo-data/
+
+# LinkedIn screenshot captures (temp)
+shots/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

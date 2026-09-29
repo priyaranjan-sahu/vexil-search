@@ -10,11 +10,12 @@ use std::path::PathBuf;
 use std::sync::mpsc::channel;
 use std::sync::Mutex;
 use std::thread;
+#[cfg(desktop)]
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, WindowEvent,
 };
+use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
 mod db;
 
@@ -127,14 +128,19 @@ fn start_indexing(
             .as_secs() as i64;
 
         let mut dirs_to_scan = Vec::new();
-        if let Some(doc_dir) = dirs::document_dir() {
-            dirs_to_scan.push(doc_dir);
-        }
-        if let Some(dl_dir) = dirs::download_dir() {
-            dirs_to_scan.push(dl_dir);
-        }
-        for dir in valid_custom_dirs {
-            dirs_to_scan.push(dir);
+        if let Ok(demo) = std::env::var("VEXIL_DEMO_DIR") {
+            // TEMP demo/screenshot mode: scan only the sample folder.
+            dirs_to_scan.push(PathBuf::from(demo));
+        } else {
+            if let Some(doc_dir) = dirs::document_dir() {
+                dirs_to_scan.push(doc_dir);
+            }
+            if let Some(dl_dir) = dirs::download_dir() {
+                dirs_to_scan.push(dl_dir);
+            }
+            for dir in valid_custom_dirs {
+                dirs_to_scan.push(dir);
+            }
         }
 
         let mut exclusions = std::collections::HashSet::new();
@@ -738,8 +744,12 @@ pub fn run() {
     // `mut` is only needed when the e2e feature re-assigns builder below
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_opener::init());
+
+    #[cfg(desktop)]
+    {
+        builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
+    }
 
     #[cfg(feature = "e2e")]
     {
@@ -750,33 +760,36 @@ pub fn run() {
 
     builder
         .setup(|app| {
-            let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&quit_i])?;
-            let tray_icon = app
-                .default_window_icon()
-                .cloned()
-                .ok_or("no default window icon")?;
+            #[cfg(desktop)]
+            {
+                let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+                let menu = Menu::with_items(app, &[&quit_i])?;
+                let tray_icon = app
+                    .default_window_icon()
+                    .cloned()
+                    .ok_or("no default window icon")?;
 
-            let _tray = TrayIconBuilder::new()
-                .icon(tray_icon)
-                .menu(&menu)
-                .on_menu_event(|app, event| if event.id.as_ref() == "quit" {
-                    app.exit(0);
-                })
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        ..
-                    } = event
-                    {
-                        let app = tray.app_handle();
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
+                let _tray = TrayIconBuilder::new()
+                    .icon(tray_icon)
+                    .menu(&menu)
+                    .on_menu_event(|app, event| if event.id.as_ref() == "quit" {
+                        app.exit(0);
+                    })
+                    .on_tray_icon_event(|tray, event| {
+                        if let TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            ..
+                        } = event
+                        {
+                            let app = tray.app_handle();
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
                         }
-                    }
-                })
-                .build(app)?;
+                    })
+                    .build(app)?;
+            }
 
             let app_dir = app
                 .path()
@@ -825,8 +838,10 @@ pub fn run() {
                     Err(_) => return,
                 };
 
-                if let Some(dl_dir) = dirs::download_dir() {
-                    let _ = watcher.watch(&dl_dir, RecursiveMode::Recursive);
+                if std::env::var("VEXIL_DEMO_DIR").is_err() {
+                    if let Some(dl_dir) = dirs::download_dir() {
+                        let _ = watcher.watch(&dl_dir, RecursiveMode::Recursive);
+                    }
                 }
 
                 let mut pending_paths = std::collections::HashSet::new();
