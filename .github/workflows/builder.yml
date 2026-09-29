@@ -63,7 +63,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [macos-latest, ubuntu-22.04, windows-latest]
+        platform: [macos-latest, ubuntu-24.04, windows-latest]
     
     runs-on: ${{ matrix.platform }}
     steps:
@@ -142,6 +142,14 @@ jobs:
       - name: Install NPM dependencies
         run: npm ci
 
+      - name: Install Android SDK & NDK
+        env:
+          ANDROID_HOME: /usr/local/lib/android/sdk
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager --install "ndk;27.0.12077973" "platforms;android-36" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+
       - name: Build Android APK
         run: npm run tauri android build -- --apk
         
@@ -180,7 +188,10 @@ jobs:
       - name: Install NPM dependencies
         run: npm ci
 
-      - name: Build iOS App
+      - name: Install XcodeGen (required by tauri ios init)
+        run: brew install xcodegen
+
+      - name: Initialize iOS project
         run: npm run tauri ios init
       - name: Build iOS App (PR)
         if: github.event_name == 'pull_request'
