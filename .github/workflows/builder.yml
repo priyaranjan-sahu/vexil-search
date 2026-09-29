@@ -123,8 +123,19 @@ jobs:
           yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
           "$SDKMANAGER" --install "ndk;27.0.12077973" "platforms;android-36" > /dev/null
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
-      - name: Build Android APK
+      - name: Build Android APK (Release)
         run: npm run tauri android build -- --apk
+      - name: Build Android APK (Debug, installable)
+        run: npm run tauri android build -- --apk --debug
+      # Upload APKs as run artifacts so they can be downloaded for testing
+      - name: Upload APKs as Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apks
+          path: |
+            src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk
+            src-tauri/gen/android/app/build/outputs/apk/universal/debug/*.apk
+          if-no-files-found: error
       # Upload the APK to the latest release
       - name: Upload APK to Release
         if: github.event_name != 'pull_request'
