@@ -16,7 +16,6 @@
     "global-shortcut:allow-unregister",
     "global-shortcut:default",
     "opener:default",
-    "opener:allow-open-path",
-    "wdio:default"
+    "opener:allow-open-path"
   ]
 }
