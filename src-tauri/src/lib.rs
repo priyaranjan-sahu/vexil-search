@@ -128,19 +128,14 @@ fn start_indexing(
             .as_secs() as i64;
 
         let mut dirs_to_scan = Vec::new();
-        if let Ok(demo) = std::env::var("VEXIL_DEMO_DIR") {
-            // TEMP demo/screenshot mode: scan only the sample folder.
-            dirs_to_scan.push(PathBuf::from(demo));
-        } else {
-            if let Some(doc_dir) = dirs::document_dir() {
-                dirs_to_scan.push(doc_dir);
-            }
-            if let Some(dl_dir) = dirs::download_dir() {
-                dirs_to_scan.push(dl_dir);
-            }
-            for dir in valid_custom_dirs {
-                dirs_to_scan.push(dir);
-            }
+        if let Some(doc_dir) = dirs::document_dir() {
+            dirs_to_scan.push(doc_dir);
+        }
+        if let Some(dl_dir) = dirs::download_dir() {
+            dirs_to_scan.push(dl_dir);
+        }
+        for dir in valid_custom_dirs {
+            dirs_to_scan.push(dir);
         }
 
         let mut exclusions = std::collections::HashSet::new();
@@ -743,8 +738,7 @@ fn exit_app(app_handle: AppHandle) {
 pub fn run() {
     // `mut` is only needed when the e2e feature re-assigns builder below
     #[allow(unused_mut)]
-    let mut builder = tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init());
+    let mut builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
 
     #[cfg(desktop)]
     {
@@ -838,10 +832,8 @@ pub fn run() {
                     Err(_) => return,
                 };
 
-                if std::env::var("VEXIL_DEMO_DIR").is_err() {
-                    if let Some(dl_dir) = dirs::download_dir() {
-                        let _ = watcher.watch(&dl_dir, RecursiveMode::Recursive);
-                    }
+                if let Some(dl_dir) = dirs::download_dir() {
+                    let _ = watcher.watch(&dl_dir, RecursiveMode::Recursive);
                 }
 
                 let mut pending_paths = std::collections::HashSet::new();
