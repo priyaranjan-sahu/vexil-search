@@ -113,7 +113,6 @@ jobs:
 
   build-android:
     needs: quality-gates
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Private Repository
@@ -128,9 +127,6 @@ jobs:
         with:
           distribution: 'zulu'
           java-version: '17'
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
 
       - name: Install Node.js
         uses: actions/setup-node@v4
@@ -161,7 +157,6 @@ jobs:
 
   build-ios:
     needs: quality-gates
-    if: github.event_name != 'pull_request'
     runs-on: macos-latest
     steps:
       - name: Checkout Private Repository
@@ -197,6 +192,7 @@ jobs:
 
       # Note: iOS .ipa files require Apple Developer code signing certificates to run on physical devices.
       # We upload the unsigned .app or .ipa depending on Tauri's output configuration.
+
 
 
 
