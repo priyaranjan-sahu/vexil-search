@@ -184,7 +184,7 @@ jobs:
         run: npm run tauri ios init
       - name: Build iOS App (PR)
         if: github.event_name == 'pull_request'
-        run: npm run tauri ios build -- --target aarch64-apple-ios-sim
+        run: npm run tauri ios build -- --target aarch64-sim
 
       - name: Build iOS App (Release)
         if: github.event_name != 'pull_request'
