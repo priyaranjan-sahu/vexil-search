@@ -96,6 +96,8 @@ jobs:
   build-android:
     needs: quality-gates
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout Private Repository
         uses: actions/checkout@v4
@@ -155,15 +157,17 @@ jobs:
             src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk
             src-tauri/gen/android/app/build/outputs/apk/universal/debug/*.apk
           if-no-files-found: error
-      # Upload the APK to the latest release
+      # Upload the APK to the latest release (same upload endpoint tauri-action uses)
       - name: Upload APK to Release
         if: github.event_name != 'pull_request'
-        uses: softprops/action-gh-release@v2
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: latest
-          files: src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view latest --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1 || gh release create latest --title "Vexil Search latest" --repo "$GITHUB_REPOSITORY"
+          cd src-tauri/gen/android/app/build/outputs/apk/universal/release
+          for f in *.apk; do
+            gh release upload latest "$f" --repo "$GITHUB_REPOSITORY" --clobber
+          done
   build-ios:
     needs: quality-gates
     runs-on: macos-latest
