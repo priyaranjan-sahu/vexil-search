@@ -123,7 +123,22 @@ jobs:
           yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
           "$SDKMANAGER" --install "ndk;27.0.12077973" "platforms;android-36" > /dev/null
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
-      - name: Build Android APK (Release)
+      - name: Configure Release Signing
+        if: ${{ secrets.VEXIL_KEYSTORE_B64 != '' }}
+        env:
+          VEXIL_KEYSTORE_B64: ${{ secrets.VEXIL_KEYSTORE_B64 }}
+          VEXIL_KEYSTORE_PASSWORD: ${{ secrets.VEXIL_KEYSTORE_PASSWORD }}
+          VEXIL_KEY_ALIAS: ${{ secrets.VEXIL_KEY_ALIAS }}
+          VEXIL_KEY_PASSWORD: ${{ secrets.VEXIL_KEY_PASSWORD }}
+        run: |
+          echo "$VEXIL_KEYSTORE_B64" | base64 -d > src-tauri/gen/android/app/vexil-release.keystore
+          cat > src-tauri/gen/android/app/keystore.properties <<EOF
+          storeFile=vexil-release.keystore
+          storePassword=$VEXIL_KEYSTORE_PASSWORD
+          keyAlias=$VEXIL_KEY_ALIAS
+          keyPassword=$VEXIL_KEY_PASSWORD
+          EOF
+      - name: Build Android APK (Release, signed)
         run: npm run tauri android build -- --apk
       - name: Build Android APK (Debug, installable)
         run: npm run tauri android build -- --apk --debug
