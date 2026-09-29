@@ -24,19 +24,35 @@ android {
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
     }
+    signingConfigs {
+        create("release") {
+            val keyProps = Properties().apply {
+                val propFile = file("keystore.properties")
+                if (propFile.exists()) {
+                    propFile.inputStream().use { load(it) }
+                }
+            }
+            storeFile = file(keyProps.getProperty("storeFile", "vexil-release.keystore"))
+            storePassword = keyProps.getProperty("storePassword", "changeit")
+            keyAlias = keyProps.getProperty("keyAlias", "vexil")
+            keyPassword = keyProps.getProperty("keyPassword", "changeit")
+        }
+    }
     buildTypes {
         getByName("debug") {
             manifestPlaceholders["usesCleartextTraffic"] = "true"
             isDebuggable = true
             isJniDebuggable = true
             isMinifyEnabled = false
-            packaging {                jniLibs.keepDebugSymbols.add("*/arm64-v8a/*.so")
+            packaging {
+                jniLibs.keepDebugSymbols.add("*/arm64-v8a/*.so")
                 jniLibs.keepDebugSymbols.add("*/armeabi-v7a/*.so")
                 jniLibs.keepDebugSymbols.add("*/x86/*.so")
                 jniLibs.keepDebugSymbols.add("*/x86_64/*.so")
             }
         }
         getByName("release") {
+            signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = true
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }

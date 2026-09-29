@@ -55,3 +55,7 @@ src-tauri/licenses/*_private.key
 licensing/worker/test/compat.lic
 licensing/worker/.wrangler/
 .wrangler/
+
+# Android release signing (never commit)
+src-tauri/gen/android/app/keystore.properties
+src-tauri/gen/android/app/*.keystore
