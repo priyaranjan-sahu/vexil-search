@@ -1,10 +1,8 @@
 name: Build and Release Private Repo
-
 on:
   workflow_dispatch:
   pull_request:
-    branches: [ "master" ]
-
+    branches: ["master"]
 jobs:
   quality-gates:
     runs-on: ubuntu-latest
@@ -15,47 +13,35 @@ jobs:
           repository: priyaranjan-sahu/vexil
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: .
-
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
-
+          cache: "npm"
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-
       - name: Install Ubuntu dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf rpm
-
       - name: Install NPM dependencies
         run: npm ci
-
       - name: Frontend Security Audit (NPM)
         run: npm audit --audit-level=high || true
-
       - name: Backend Security Audit (Cargo)
         run: cargo install cargo-audit && cargo audit || true
-
       - name: Frontend Type Checking
         run: npx tsc --noEmit
-
       - name: Rust Formatting
         run: cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
-
       - name: Rust Linter (Clippy)
         run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
-
       - name: Frontend Unit Tests
         run: npm run test:unit --if-present
-
       - name: Backend Unit Tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
-
   build-and-release:
     needs: quality-gates
     permissions:
@@ -64,7 +50,6 @@ jobs:
       fail-fast: false
       matrix:
         platform: [macos-latest, ubuntu-24.04, windows-latest]
-    
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout Private Repository
@@ -73,31 +58,25 @@ jobs:
           repository: priyaranjan-sahu/vexil
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: .
-
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
-
+          cache: "npm"
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-
       - name: Install Ubuntu dependencies
-        if: matrix.platform == 'ubuntu-22.04'
+        if: matrix.platform == 'ubuntu-24.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf rpm
-
+          sudo apt-get install -y build-essential curl wget file libxdo-dev libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libglib2.0-dev patchelf rpm
       - name: Install NPM dependencies
         run: npm ci
-
       - name: Build Desktop App (PR Test)
         if: github.event_name == 'pull_request'
         run: npm run tauri build ${{ matrix.platform == 'macos-latest' && '-- --target universal-apple-darwin' || '' }}
-
       - name: Build Tauri app
         if: github.event_name != 'pull_request'
         uses: tauri-apps/tauri-action@v0
@@ -105,12 +84,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: latest
-          releaseName: 'Vexil Search latest'
-          releaseBody: 'See the assets to download this version and install.'
+          releaseName: "Vexil Search latest"
+          releaseBody: "See the assets to download this version and install."
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.platform == 'macos-latest' && '--target universal-apple-darwin' || '' }}
-
   build-android:
     needs: quality-gates
     runs-on: ubuntu-latest
@@ -121,38 +99,32 @@ jobs:
           repository: priyaranjan-sahu/vexil
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: .
-
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
-          distribution: 'zulu'
-          java-version: '17'
-
+          distribution: "zulu"
+          java-version: "17"
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
-
+          cache: "npm"
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
-
       - name: Install NPM dependencies
         run: npm ci
-
       - name: Install Android SDK & NDK
         env:
           ANDROID_HOME: /usr/local/lib/android/sdk
         run: |
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          sdkmanager --install "ndk;27.0.12077973" "platforms;android-36" > /dev/null
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" --install "ndk;27.0.12077973" "platforms;android-36" > /dev/null
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
-
       - name: Build Android APK
         run: npm run tauri android build -- --apk
-        
       # Upload the APK to the latest release
       - name: Upload APK to Release
         if: github.event_name != 'pull_request'
@@ -162,7 +134,6 @@ jobs:
         with:
           tag_name: latest
           files: src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk
-
   build-ios:
     needs: quality-gates
     runs-on: macos-latest
@@ -173,41 +144,26 @@ jobs:
           repository: priyaranjan-sahu/vexil
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: .
-
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
-
+          cache: "npm"
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-ios,x86_64-apple-ios,aarch64-apple-ios-sim
-
       - name: Install NPM dependencies
         run: npm ci
-
       - name: Install XcodeGen (required by tauri ios init)
         run: brew install xcodegen
-
       - name: Initialize iOS project
         run: npm run tauri ios init
       - name: Build iOS App (PR)
         if: github.event_name == 'pull_request'
         run: npm run tauri ios build -- --target aarch64-sim
-
       - name: Build iOS App (Release)
         if: github.event_name != 'pull_request'
         run: npm run tauri ios build
-
       # Note: iOS .ipa files require Apple Developer code signing certificates to run on physical devices.
       # We upload the unsigned .app or .ipa depending on Tauri's output configuration.
-
-
-
-
-
-
-
-
