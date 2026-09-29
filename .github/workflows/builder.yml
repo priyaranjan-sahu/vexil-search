@@ -185,12 +185,16 @@ jobs:
 
       - name: Build iOS App
         run: npm run tauri ios init
-
       - name: Build iOS App
         run: npm run tauri ios build
-        
+        env:
+          CODE_SIGNING_ALLOWED: No
+          CODE_SIGNING_REQUIRED: No
+          CODE_SIGNING_IDENTITY: ''
+
       # Note: iOS .ipa files require Apple Developer code signing certificates to run on physical devices.
       # We upload the unsigned .app or .ipa depending on Tauri's output configuration.
+
 
 
 
