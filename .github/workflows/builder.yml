@@ -124,7 +124,7 @@ jobs:
           "$SDKMANAGER" --install "ndk;27.0.12077973" "platforms;android-36" > /dev/null
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
       - name: Configure Release Signing
-        if: ${{ secrets.VEXIL_KEYSTORE_B64 != '' }}
+        if: env.VEXIL_KEYSTORE_B64 != ''
         env:
           VEXIL_KEYSTORE_B64: ${{ secrets.VEXIL_KEYSTORE_B64 }}
           VEXIL_KEYSTORE_PASSWORD: ${{ secrets.VEXIL_KEYSTORE_PASSWORD }}
