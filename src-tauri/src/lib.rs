@@ -18,6 +18,7 @@ use tauri::{
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
 mod db;
+mod mobile;
 
 use db::{db_path, open_db, setup_db, SearchResult};
 
@@ -52,6 +53,22 @@ fn get_category(is_dir: bool, ext: &str) -> String {
             "Code".to_string()
         }
         _ => "Other".to_string(),
+    }
+}
+
+#[tauri::command]
+fn get_platform() -> String {
+    #[cfg(target_os = "android")]
+    {
+        return "android".to_string();
+    }
+    #[cfg(target_os = "ios")]
+    {
+        return "ios".to_string();
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        "desktop".to_string()
     }
 }
 
@@ -128,11 +145,18 @@ fn start_indexing(
             .as_secs() as i64;
 
         let mut dirs_to_scan = Vec::new();
-        if let Some(doc_dir) = dirs::document_dir() {
-            dirs_to_scan.push(doc_dir);
+        #[cfg(mobile)]
+        {
+            dirs_to_scan.extend(mobile::scan_roots(&app_handle));
         }
-        if let Some(dl_dir) = dirs::download_dir() {
-            dirs_to_scan.push(dl_dir);
+        #[cfg(not(mobile))]
+        {
+            if let Some(doc_dir) = dirs::document_dir() {
+                dirs_to_scan.push(doc_dir);
+            }
+            if let Some(dl_dir) = dirs::download_dir() {
+                dirs_to_scan.push(dl_dir);
+            }
         }
         for dir in valid_custom_dirs {
             dirs_to_scan.push(dir);
@@ -738,7 +762,9 @@ fn exit_app(app_handle: AppHandle) {
 pub fn run() {
     // `mut` is only needed when the e2e feature re-assigns builder below
     #[allow(unused_mut)]
-    let mut builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
+    let mut builder = tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init());
 
     #[cfg(desktop)]
     {
@@ -946,6 +972,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            get_platform,
             start_indexing,
             search_files,
             delete_file,
@@ -955,6 +982,10 @@ pub fn run() {
             get_index_stats,
             set_run_in_background,
             exit_app,
+            mobile::get_mobile_roots,
+            mobile::add_mobile_root,
+            mobile::remove_mobile_root,
+            mobile::import_mobile_files,
             license::get_license_status,
             license::install_license,
             license::get_device_id
