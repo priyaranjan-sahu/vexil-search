@@ -131,7 +131,11 @@ jobs:
             gh release create "$TEST_TAG" --title "Vexil Search (test build)" --prerelease --repo "$TEST_REPO"
           for f in src-tauri/target/release/bundle/*/* src-tauri/target/universal-apple-darwin/release/bundle/*/*; do
             if [ -f "$f" ]; then
-              gh release upload "$TEST_TAG" "$f" --repo "$TEST_REPO" --clobber
+              case "$f" in
+                *.dmg|*.msi|*.exe|*.deb|*.AppImage|*.rpm)
+                  gh release upload "$TEST_TAG" "$f" --repo "$TEST_REPO" --clobber
+                  ;;
+              esac
             fi
           done
   build-android:
