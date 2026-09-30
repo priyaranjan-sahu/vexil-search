@@ -121,6 +121,7 @@ jobs:
       # place (same tag). The private release is never visible publicly.
       - name: Upload Desktop to Private Test Release
         if: github.event.inputs.test_release == 'true' && github.event.inputs.release != 'true'
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
         run: |
@@ -218,6 +219,7 @@ jobs:
       # the same private prerelease the desktop jobs populate.
       - name: Upload APKs to Private Test Release
         if: github.event.inputs.test_release == 'true' && github.event.inputs.release != 'true'
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
         run: |
