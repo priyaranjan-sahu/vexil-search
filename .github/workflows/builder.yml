@@ -7,6 +7,11 @@ on:
         type: boolean
         required: false
         default: false
+      test_release:
+        description: "Upload a test build (APKs + desktop installers) to a private prerelease on the private repo"
+        type: boolean
+        required: false
+        default: false
   push:
     branches: ["master"]
   pull_request:
@@ -110,6 +115,24 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.platform == 'macos-latest' && '--target universal-apple-darwin' || '' }}
+      # Private test-build distribution: upload the desktop installers to a
+      # private prerelease on the private repo so builds can be installed and
+      # verified before a public `release` dispatch. Re-runs update assets in
+      # place (same tag). The private release is never visible publicly.
+      - name: Upload Desktop to Private Test Release
+        if: github.event.inputs.test_release == 'true' && github.event.inputs.release != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          TEST_TAG=mobile-test
+          TEST_REPO=priyaranjan-sahu/vexil
+          gh release view "$TEST_TAG" --repo "$TEST_REPO" > /dev/null 2>&1 || \
+            gh release create "$TEST_TAG" --title "Vexil Search (test build)" --prerelease --repo "$TEST_REPO"
+          for f in src-tauri/target/release/bundle/*/*; do
+            if [ -f "$f" ]; then
+              gh release upload "$TEST_TAG" "$f" --repo "$TEST_REPO" --clobber
+            fi
+          done
   build-android:
     needs: quality-gates
     runs-on: ubuntu-latest
@@ -190,6 +213,20 @@ jobs:
           cd src-tauri/gen/android/app/build/outputs/apk/universal/release
           for f in *.apk; do
             gh release upload "$RELEASE_TAG" "$f" --repo "$GITHUB_REPOSITORY" --clobber
+          done
+      # Private test-build distribution: upload the release and debug APKs to
+      # the same private prerelease the desktop jobs populate.
+      - name: Upload APKs to Private Test Release
+        if: github.event.inputs.test_release == 'true' && github.event.inputs.release != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          TEST_TAG=mobile-test
+          TEST_REPO=priyaranjan-sahu/vexil
+          gh release view "$TEST_TAG" --repo "$TEST_REPO" > /dev/null 2>&1 || \
+            gh release create "$TEST_TAG" --title "Vexil Search (test build)" --prerelease --repo "$TEST_REPO"
+          for f in src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk src-tauri/gen/android/app/build/outputs/apk/universal/debug/*.apk; do
+            gh release upload "$TEST_TAG" "$f" --repo "$TEST_REPO" --clobber
           done
   build-ios:
     needs: quality-gates
