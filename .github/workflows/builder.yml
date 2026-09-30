@@ -129,7 +129,7 @@ jobs:
           TEST_REPO=priyaranjan-sahu/vexil
           gh release view "$TEST_TAG" --repo "$TEST_REPO" > /dev/null 2>&1 || \
             gh release create "$TEST_TAG" --title "Vexil Search (test build)" --prerelease --repo "$TEST_REPO"
-          for f in src-tauri/target/release/bundle/*/*; do
+          for f in src-tauri/target/release/bundle/*/* src-tauri/target/universal-apple-darwin/release/bundle/*/*; do
             if [ -f "$f" ]; then
               gh release upload "$TEST_TAG" "$f" --repo "$TEST_REPO" --clobber
             fi
