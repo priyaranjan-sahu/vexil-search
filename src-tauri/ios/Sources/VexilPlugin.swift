@@ -67,7 +67,7 @@ extension VexilPlugin: UIDocumentInteractionControllerDelegate {
     manager.viewController ?? UIViewController()
   }
 
-  public func documentInteractionControllerDidDismissPreview(
+  public func documentInteractionControllerDidEndPreview(
     _ controller: UIDocumentInteractionController
   ) {
     documentController = nil
@@ -75,7 +75,7 @@ extension VexilPlugin: UIDocumentInteractionControllerDelegate {
 
   public func documentInteractionController(
     _ controller: UIDocumentInteractionController,
-    didEndSendingToApplication applicationName: String
+    didEndSendingToApplication applicationName: String?
   ) {
     documentController = nil
   }
