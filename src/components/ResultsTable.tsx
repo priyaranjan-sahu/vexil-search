@@ -1,7 +1,11 @@
 import { useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { HighlightedSnippet } from "./HighlightedSnippet";
-import { useSearchStore, SearchResult } from "../store/searchStore";
+import {
+  useSearchStore,
+  SearchResult,
+  BrowseSection,
+} from "../store/searchStore";
 
 const getCategoryIcon = (category: string) => {
   const defaultStyle = {
@@ -151,6 +155,8 @@ export const ResultsTable = ({
   selectedResult,
   setSelectedResult,
   setContextMenu,
+  browseSections = [],
+  isBrowsing = false,
 }: {
   filteredResults: SearchResult[];
   selectedResult: SearchResult | null;
@@ -160,6 +166,8 @@ export const ResultsTable = ({
     y: number;
     result: SearchResult;
   }) => void;
+  browseSections?: BrowseSection[];
+  isBrowsing?: boolean;
 }) => {
   const isSearching = useSearchStore((state) => state.isSearching);
 
@@ -191,6 +199,86 @@ export const ResultsTable = ({
             <div className="spinner"></div>
             <span>Searching local vectors...</span>
           </div>
+        ) : isBrowsing ? (
+          browseSections.length > 0 ? (
+            <div className="browse-view">
+              {browseSections.map((section) => (
+                <section key={section.category} className="browse-section">
+                  <div className="browse-header">
+                    <span className="browse-header-title">
+                      {getCategoryIcon(section.category)}
+                      {section.category}
+                    </span>
+                    <span className="browse-summary">
+                      {section.count.toLocaleString()}{" "}
+                      {section.count === 1 ? "file" : "files"}
+                      {section.files.length < section.count &&
+                        section.files.length > 0 &&
+                        ` · showing the ${section.files.length} latest`}
+                    </span>
+                  </div>
+                  {section.files.length > 0 ? (
+                    <table className="data-table browse-table">
+                      <tbody>
+                        {section.files.map((result) => (
+                          <tr
+                            key={result.id}
+                            className={
+                              selectedResult?.id === result.id ? "selected" : ""
+                            }
+                            onClick={() => setSelectedResult(result)}
+                            onDoubleClick={() => openResult(result)}
+                            onContextMenu={(e) => {
+                              e.preventDefault();
+                              setSelectedResult(result);
+                              setContextMenu({
+                                x: e.clientX,
+                                y: e.clientY,
+                                result,
+                              });
+                            }}
+                          >
+                            <td className="td-name">
+                              {getCategoryIcon(result.category)}
+                              {result.title}
+                            </td>
+                            <td title={result.path}>{result.path}</td>
+                            <td>
+                              <HighlightedSnippet
+                                text={result.snippet || result.title}
+                              />
+                            </td>
+                            <td className="td-relevance">—</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <div className="browse-empty-row">
+                      No files in this category yet.
+                    </div>
+                  )}
+                </section>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-state">
+              <svg
+                className="empty-icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+              >
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+                <line x1="16" y1="13" x2="8" y2="13"></line>
+                <line x1="16" y1="17" x2="8" y2="17"></line>
+                <polyline points="10 9 9 9 8 9"></polyline>
+              </svg>
+              <p>No files indexed yet. Start typing to search...</p>
+            </div>
+          )
         ) : filteredResults.length > 0 ? (
           <div style={{ height: "100%", width: "100%" }}>
             <table className="data-table" style={{ width: "100%" }}>

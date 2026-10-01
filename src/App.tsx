@@ -16,7 +16,9 @@ function App() {
     query: searchQuery,
     setQuery: setSearchQuery,
     results,
+    browseSections,
     runSearch,
+    runBrowse,
     openResult,
     indexingProgress,
     setIndexingProgress,
@@ -178,6 +180,10 @@ function App() {
       invoke<number>("get_index_stats")
         .then(setDbTotalCount)
         .catch(console.error);
+      // A fresh scan means fresh browse sections when no query is active.
+      if (!useSearchStore.getState().query.trim()) {
+        void runBrowse();
+      }
     });
 
     invoke<number>("get_index_stats")
@@ -207,6 +213,7 @@ function App() {
     setDbTotalCount,
     setRadarFiles,
     setRadarToast,
+    runBrowse,
   ]);
 
   // 3. Register Global Shortcut
@@ -369,6 +376,16 @@ function App() {
   const filteredResults = useMemo(
     () => getFilteredResults(),
     [getFilteredResults],
+  );
+
+  const browsing = searchQuery.trim() === "";
+  const browseFileCount = useMemo(
+    () =>
+      browseSections.reduce(
+        (total, section) => total + section.files.length,
+        0,
+      ),
+    [browseSections],
   );
 
   return (
@@ -804,8 +821,22 @@ function App() {
 
       {/* Info Bar */}
       <div className="info-bar">
-        {filteredResults.length} items found
-        {activeCategory !== "All" && <> · Showing {activeCategory}</>}
+        {browsing ? (
+          <>
+            {browseFileCount > 0
+              ? `${browseFileCount} file${browseFileCount === 1 ? "" : "s"} shown`
+              : "Browse by category"}{" "}
+            ·{" "}
+            {activeCategory === "All"
+              ? "All categories"
+              : `Showing ${activeCategory}`}
+          </>
+        ) : (
+          <>
+            {filteredResults.length} items found
+            {activeCategory !== "All" && <> · Showing {activeCategory}</>}
+          </>
+        )}
         <span style={{ marginLeft: "16px", color: "var(--text-secondary)" }}>
           · Database: {dbTotalCount.toLocaleString()} files
         </span>
@@ -837,6 +868,8 @@ function App() {
         {/* Results Panel (Left Side Now) */}
         <ResultsTable
           filteredResults={filteredResults}
+          browseSections={browseSections}
+          isBrowsing={browsing}
           selectedResult={selectedResult}
           setSelectedResult={setSelectedResult}
           setContextMenu={setContextMenu}

@@ -7,6 +7,7 @@ beforeEach(() => {
   useSearchStore.setState({
     query: "",
     results: [],
+    browseSections: [],
     myPicks: [],
     activeCategory: "All",
     activeSizeFilter: "Any Size",
@@ -45,12 +46,13 @@ describe("SearchTab", () => {
   it("shows the empty hint when there is no query", () => {
     render(<SearchTab onLongPress={vi.fn()} />);
     expect(
-      screen.getByText("Start typing to search your files"),
+      screen.getByText(/No files indexed yet\. Add a folder in Settings/),
     ).toBeInTheDocument();
   });
 
   it("lists matching results", () => {
     useSearchStore.setState({
+      query: "song",
       results: [
         {
           id: 1,
@@ -66,5 +68,55 @@ describe("SearchTab", () => {
     });
     render(<SearchTab onLongPress={vi.fn()} />);
     expect(screen.getByText("song.mp3")).toBeInTheDocument();
+  });
+
+  it("renders browse sections with counts when no query is entered", () => {
+    useSearchStore.setState({
+      query: "",
+      browseSections: [
+        {
+          category: "Images",
+          count: 5,
+          files: [
+            {
+              id: 1,
+              title: "photo.jpg",
+              snippet: "",
+              path: "/home/photos/photo.jpg",
+              relevance: 0,
+              size: 1024,
+              modified: 1000,
+              category: "Images",
+            },
+          ],
+        },
+      ],
+    });
+    render(<SearchTab onLongPress={vi.fn()} />);
+    expect(screen.getByText(/Browsing by category/)).toBeInTheDocument();
+    expect(screen.getByText("5 files · 1 latest")).toBeInTheDocument();
+    expect(screen.getByText("photo.jpg")).toBeInTheDocument();
+  });
+
+  it("hides search results while browsing categories", () => {
+    useSearchStore.setState({
+      query: "",
+      browseSections: [],
+      results: [
+        {
+          id: 7,
+          title: "report.pdf",
+          snippet: "text",
+          path: "/docs/report.pdf",
+          relevance: 80,
+          size: 2048,
+          modified: 0,
+          category: "Documents",
+        },
+      ],
+    });
+    render(<SearchTab onLongPress={vi.fn()} />);
+    expect(screen.queryByText("report.pdf")).not.toBeInTheDocument();
+    expect(screen.getByText(/No files indexed yet/)).toBeInTheDocument();
   });
 });

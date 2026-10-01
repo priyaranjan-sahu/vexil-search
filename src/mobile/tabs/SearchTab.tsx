@@ -55,6 +55,7 @@ export const SearchTab = ({
   const query = useSearchStore((s) => s.query);
   const setQuery = useSearchStore((s) => s.setQuery);
   const results = useSearchStore((s) => s.results);
+  const browseSections = useSearchStore((s) => s.browseSections);
   const isSearching = useSearchStore((s) => s.isSearching);
   const dbTotalCount = useSearchStore((s) => s.dbTotalCount);
   const activeCategory = useSearchStore((s) => s.activeCategory);
@@ -69,6 +70,29 @@ export const SearchTab = ({
   const filteredResults = useMemo(
     () => getFilteredResults(results, activeSizeFilter, activeDateFilter),
     [results, activeSizeFilter, activeDateFilter],
+  );
+
+  const browsing = query.trim() === "";
+
+  const browseView = useMemo(
+    () =>
+      browseSections
+        .map((section) => ({
+          ...section,
+          files: getFilteredResults(
+            section.files,
+            activeSizeFilter,
+            activeDateFilter,
+          ),
+        }))
+        .filter((section) => section.count > 0),
+    [browseSections, activeSizeFilter, activeDateFilter],
+  );
+
+  const browseFileCount = useMemo(
+    () =>
+      browseView.reduce((total, section) => total + section.files.length, 0),
+    [browseView],
   );
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -130,7 +154,11 @@ export const SearchTab = ({
       </div>
 
       <div className="mob-info">
-        {filteredResults.length} result{filteredResults.length === 1 ? "" : "s"}{" "}
+        {browsing
+          ? browseFileCount > 0
+            ? `Browsing by category · ${browseFileCount} file${browseFileCount === 1 ? "" : "s"}`
+            : "Browsing by category"
+          : `${filteredResults.length} result${filteredResults.length === 1 ? "" : "s"}`}{" "}
         · DB: {dbTotalCount.toLocaleString()} files
       </div>
 
@@ -140,6 +168,45 @@ export const SearchTab = ({
             <span className="mob-spinner" aria-hidden="true" />
             <span>Searching local vectors...</span>
           </div>
+        ) : browsing ? (
+          browseView.length > 0 ? (
+            <div className="mob-browse">
+              {browseView.map((section) => (
+                <section key={section.category} className="mob-browse-section">
+                  <header className="mob-browse-header">
+                    <span className="mob-browse-title">{section.category}</span>
+                    <span className="mob-browse-summary">
+                      {section.count.toLocaleString()} file
+                      {section.count === 1 ? "" : "s"}
+                      {section.files.length < section.count &&
+                        section.files.length > 0 &&
+                        ` · ${section.files.length} latest`}
+                    </span>
+                  </header>
+                  {section.files.length > 0 ? (
+                    <ul className="mob-list">
+                      {section.files.map((result) => (
+                        <ResultCard
+                          key={`${section.category}-${result.id}`}
+                          result={result}
+                          isPinned={myPicks.some((p) => p.id === result.id)}
+                          onOpen={() => void openResult(result)}
+                          onLongPress={onLongPress}
+                        />
+                      ))}
+                    </ul>
+                  ) : (
+                    <div className="mob-browse-empty">No files here yet</div>
+                  )}
+                </section>
+              ))}
+            </div>
+          ) : (
+            <div className="mob-empty">
+              No files indexed yet. Add a folder in Settings, or start typing to
+              search.
+            </div>
+          )
         ) : filteredResults.length > 0 ? (
           <ul className="mob-list">
             {filteredResults.map((result) => (
@@ -153,11 +220,7 @@ export const SearchTab = ({
             ))}
           </ul>
         ) : (
-          <div className="mob-empty">
-            {query.trim()
-              ? "No results found"
-              : "Start typing to search your files"}
-          </div>
+          <div className="mob-empty">No results found</div>
         )}
       </div>
     </section>

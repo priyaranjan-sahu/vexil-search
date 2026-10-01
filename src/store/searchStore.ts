@@ -6,6 +6,7 @@ import { hasProLicense } from "./licenseStore";
 
 let searchSeq = 0;
 let searchTimer: number | undefined;
+let browseSeq = 0;
 
 export interface SearchResult {
   id: number;
@@ -18,6 +19,12 @@ export interface SearchResult {
   category: string;
 }
 
+export interface BrowseSection {
+  category: string;
+  count: number;
+  files: SearchResult[];
+}
+
 export interface DirEntry {
   name: string;
   path: string;
@@ -28,6 +35,7 @@ export type Theme = "system" | "light" | "dark";
 interface SearchState {
   query: string;
   results: SearchResult[];
+  browseSections: BrowseSection[];
   isSearching: boolean;
   indexingProgress: number | null;
   dbTotalCount: number;
@@ -73,6 +81,7 @@ interface SearchState {
   openResult: (result: SearchResult | string) => void;
   openInExplorer: (path: string) => void;
   runSearch: (query: string, immediate?: boolean) => Promise<void>;
+  runBrowse: () => Promise<void>;
   handleCopyPath: () => void;
   handleDelete: () => Promise<void>;
 }
@@ -82,6 +91,7 @@ export const useSearchStore = create<SearchState>()(
     (set, get) => ({
       query: "",
       results: [],
+      browseSections: [],
       isSearching: false,
       indexingProgress: null,
       dbTotalCount: 0,
@@ -197,9 +207,10 @@ export const useSearchStore = create<SearchState>()(
         }
         if (!query.trim()) {
           set({ results: [], isSearching: false });
+          void get().runBrowse();
           return;
         }
-        set({ isSearching: true });
+        set({ isSearching: true, browseSections: [] });
         const run = async () => {
           try {
             const results = await invoke<SearchResult[]>("search_files", {
@@ -226,6 +237,25 @@ export const useSearchStore = create<SearchState>()(
           navigator.clipboard.writeText(selected.path).catch(console.error);
         }
       },
+      runBrowse: async () => {
+        const seq = ++browseSeq;
+        set({ isSearching: false });
+        try {
+          const sections = await invoke<unknown>("browse_files", {
+            category: get().activeCategory,
+          });
+          if (browseSeq !== seq) return;
+          set({
+            browseSections: Array.isArray(sections)
+              ? (sections as BrowseSection[])
+              : [],
+          });
+        } catch (error) {
+          if (browseSeq !== seq) return;
+          console.error("Failed to load browse sections:", error);
+          set({ browseSections: [] });
+        }
+      },
       handleDelete: async () => {
         const selected = get().selectedResult;
         if (!selected) return;
@@ -233,6 +263,10 @@ export const useSearchStore = create<SearchState>()(
           await invoke("delete_file", { path: selected.path });
           set((state) => ({
             results: state.results.filter((r) => r.id !== selected.id),
+            browseSections: state.browseSections.map((section) => ({
+              ...section,
+              files: section.files.filter((r) => r.id !== selected.id),
+            })),
             myPicks: state.myPicks.filter((p) => p.id !== selected.id),
             recentItems: state.recentItems.filter((r) => r.id !== selected.id),
             selectedResult: null,

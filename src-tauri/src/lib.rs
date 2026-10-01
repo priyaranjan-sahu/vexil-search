@@ -600,6 +600,177 @@ fn get_index_stats(app_handle: AppHandle) -> Result<usize, String> {
     Ok(count as usize)
 }
 
+const BROWSE_LIMIT: i64 = 50;
+const BROWSE_SECTION_LIMIT: i64 = 10;
+
+#[derive(serde::Serialize, Clone)]
+struct BrowseSection {
+    category: String,
+    count: usize,
+    files: Vec<SearchResult>,
+}
+
+// Newest files for one category, reused by both the "All" overview (short
+// preview per section) and the single-category drill-down (full list).
+fn browse_category_files(
+    conn: &rusqlite::Connection,
+    category: &str,
+    limit: i64,
+) -> Result<Vec<SearchResult>, String> {
+    let mut stmt = conn
+        .prepare(
+            "
+            SELECT f.rowid, f.title, f.path, '' as snippet, 0 as bm25,
+                   m.size, m.mtime, m.category
+            FROM file_index f
+            LEFT JOIN file_metadata m ON f.path = m.path
+            WHERE m.category = ?1
+            ORDER BY m.mtime DESC, f.rowid DESC
+            LIMIT ?2
+        ",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map(params![category, limit], |row| {
+            Ok(SearchResult {
+                id: row.get::<_, i64>(0)?,
+                title: row.get::<_, String>(1)?,
+                path: row.get::<_, String>(2)?,
+                snippet: String::new(),
+                relevance: 0,
+                size: row.get::<_, i64>(5).unwrap_or(0) as u64,
+                modified: row.get::<_, i64>(6).unwrap_or(0),
+                category: row
+                    .get::<_, String>(7)
+                    .unwrap_or_else(|_| "Other".to_string()),
+            })
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        match row {
+            Ok(r) => out.push(r),
+            Err(e) => log::debug!("browse row error: {}", e),
+        }
+    }
+    Ok(out)
+}
+
+// Browse files by category without a search word. "All" returns one section
+// per present category (newest preview), otherwise a single category's list.
+#[tauri::command]
+fn browse_files(app_handle: AppHandle, category: String) -> Result<Vec<BrowseSection>, String> {
+    let pool = app_handle.state::<db::DbPool>();
+    let conn = pool.get().map_err(|_| "DB pool error".to_string())?;
+
+    let category_count = |conn: &rusqlite::Connection, cat: &str| -> usize {
+        conn.query_row(
+            "SELECT COUNT(*) FROM file_metadata WHERE category = ?1",
+            params![cat],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        .max(0) as usize
+    };
+
+    if category != "All" {
+        let files = browse_category_files(&conn, &category, BROWSE_LIMIT)?;
+        return Ok(vec![BrowseSection {
+            count: category_count(&conn, &category),
+            category,
+            files,
+        }]);
+    }
+
+    let mut existing: Vec<String> = Vec::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT DISTINCT category FROM file_metadata")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        for cat in rows.flatten() {
+            if !existing.contains(&cat) {
+                existing.push(cat);
+            }
+        }
+    }
+
+    let ordered = order_browse_categories(existing);
+
+    let mut sections = Vec::new();
+    for cat in ordered {
+        let files = browse_category_files(&conn, &cat, BROWSE_SECTION_LIMIT)?;
+        sections.push(BrowseSection {
+            count: category_count(&conn, &cat),
+            category: cat,
+            files,
+        });
+    }
+
+    Ok(sections)
+}
+
+// Canonical section order, matching the category filter buttons; any unknown
+// category (e.g. a future "Other" bucket) is appended last.
+fn order_browse_categories(existing: Vec<String>) -> Vec<String> {
+    const CANONICAL: [&str; 9] = [
+        "Music",
+        "Videos",
+        "Programs",
+        "Images",
+        "Documents",
+        "Archives",
+        "Code",
+        "Folder",
+        "Other",
+    ];
+    let mut ordered: Vec<String> = CANONICAL
+        .iter()
+        .filter(|cat| existing.iter().any(|c| c == *cat))
+        .map(|cat| cat.to_string())
+        .collect();
+    for cat in existing {
+        if !ordered.contains(&cat) {
+            ordered.push(cat);
+        }
+    }
+    ordered
+}
+
+#[cfg(test)]
+mod tests {
+    use super::order_browse_categories;
+
+    #[test]
+    fn orders_categories_in_canonical_order() {
+        let ordered = order_browse_categories(vec![
+            "Images".to_string(),
+            "Music".to_string(),
+            "Code".to_string(),
+        ]);
+        assert_eq!(ordered, vec!["Music", "Images", "Code"]);
+    }
+
+    #[test]
+    fn appends_unknown_categories_last() {
+        let ordered = order_browse_categories(vec![
+            "Weird".to_string(),
+            "Images".to_string(),
+            "Other".to_string(),
+        ]);
+        assert_eq!(ordered, vec!["Images", "Other", "Weird"]);
+    }
+
+    #[test]
+    fn handles_empty_input() {
+        assert!(order_browse_categories(Vec::new()).is_empty());
+    }
+}
+
 use sysinfo::Disks;
 
 fn disk_is_pro_only(path: &std::path::Path) -> bool {
@@ -975,6 +1146,7 @@ pub fn run() {
             get_platform,
             start_indexing,
             search_files,
+            browse_files,
             delete_file,
             get_system_drives,
             get_directories,

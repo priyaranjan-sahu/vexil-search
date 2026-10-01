@@ -145,6 +145,10 @@ export const MobileApp = () => {
       listen<number>(TAURI_EVENTS.indexDone, () => {
         setIndexingProgress(null);
         void refreshStats();
+        // A fresh scan means fresh browse sections when no query is active.
+        if (!useSearchStore.getState().query.trim()) {
+          void useSearchStore.getState().runBrowse();
+        }
       }),
     ]).then((unlisten) => {
       if (disposed) {
@@ -227,6 +231,10 @@ export const MobileApp = () => {
                 const s = useSearchStore.getState();
                 useSearchStore.setState({
                   results: s.results.filter((r) => r.id !== result.id),
+                  browseSections: s.browseSections.map((section) => ({
+                    ...section,
+                    files: section.files.filter((r) => r.id !== result.id),
+                  })),
                   myPicks: s.myPicks.filter((p) => p.id !== result.id),
                   recentItems: s.recentItems.filter((r) => r.id !== result.id),
                 });
