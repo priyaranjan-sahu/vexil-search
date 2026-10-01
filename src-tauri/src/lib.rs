@@ -1,4 +1,5 @@
 mod content;
+mod ios_open;
 pub mod license;
 mod security;
 
@@ -743,7 +744,7 @@ fn order_browse_categories(existing: Vec<String>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::open_file_external;
+    use super::open_target_path;
     use super::order_browse_categories;
 
     #[test]
@@ -773,27 +774,27 @@ mod tests {
 
     #[test]
     fn open_file_external_rejects_path_traversal() {
-        let err = open_file_external("/tmp/../etc/passwd".to_string()).unwrap_err();
+        let err = open_target_path("/tmp/../etc/passwd").unwrap_err();
         assert!(err.contains("Security"), "unexpected error: {err}");
     }
 
     #[test]
     fn open_file_external_rejects_relative_paths() {
-        let err = open_file_external("relative/clip.mp4".to_string()).unwrap_err();
+        let err = open_target_path("relative/clip.mp4").unwrap_err();
         assert!(err.contains("Security"), "unexpected error: {err}");
     }
 
     #[test]
     fn open_file_external_rejects_missing_files() {
         let missing = std::env::temp_dir().join("vexil-open-file-external-missing.mp4");
-        let err = open_file_external(missing.to_string_lossy().into_owned()).unwrap_err();
+        let err = open_target_path(&missing.to_string_lossy()).unwrap_err();
         assert!(err.contains("Security"), "unexpected error: {err}");
     }
 
     #[test]
     fn open_file_external_rejects_directories() {
         let dir = std::env::temp_dir();
-        let err = open_file_external(dir.to_string_lossy().into_owned()).unwrap_err();
+        let err = open_target_path(&dir.to_string_lossy()).unwrap_err();
         assert!(err.contains("Not a file"), "unexpected error: {err}");
     }
 }
@@ -945,12 +946,20 @@ fn open_in_explorer(path: String) -> Result<String, String> {
 ///
 /// Android goes through the `MainActivity` JS bridge, which owns the
 /// FileProvider/`ACTION_VIEW` plumbing, so this command only has to serve
-/// desktop; `openResult` in the frontend prefers the bridge when it is present.
+/// desktop and iOS; `openResult` in the frontend prefers the bridge when it is
+/// present.
 #[tauri::command]
-fn open_file_external(path: String) -> Result<String, String> {
+fn open_file_external(app: AppHandle, path: String) -> Result<String, String> {
+    let valid_path = open_target_path(&path)?;
+    open_with_default_app(&app, &valid_path)
+}
+
+/// Resolves `path` against the allowed roots and confirms it is an existing
+/// file, so no platform ever hands an arbitrary path to the OS.
+fn open_target_path(path: &str) -> Result<PathBuf, String> {
     let allowed = security::AllowedRoots::new(true);
     let valid_path = allowed
-        .validate(&path)
+        .validate(path)
         .map_err(|e| format!("Security: {}", e))?;
 
     // `validate` canonicalizes, so a missing file already failed above; this
@@ -959,21 +968,30 @@ fn open_file_external(path: String) -> Result<String, String> {
         return Err(format!("Not a file: {}", valid_path.display()));
     }
 
-    open_with_default_app(&valid_path)
+    Ok(valid_path)
 }
 
 #[cfg(desktop)]
-fn open_with_default_app(path: &std::path::Path) -> Result<String, String> {
+fn open_with_default_app(_app: &AppHandle, path: &std::path::Path) -> Result<String, String> {
     opener::open(path).map_err(|e| e.to_string())?;
     Ok("Opened".to_string())
 }
 
-#[cfg(mobile)]
-fn open_with_default_app(_path: &std::path::Path) -> Result<String, String> {
-    // iOS has no bridge equivalent yet: `UIApplication.open` refuses local
-    // file:// urls, and handing the file to another app needs
-    // UIDocumentInteractionController / a share sheet.
-    Err("Opening files in another app is not supported on iOS yet.".to_string())
+/// iOS hands the file to the Swift `VexilPlugin`, which drives a
+/// `UIDocumentInteractionController` so the user can open it in another app.
+#[cfg(target_os = "ios")]
+fn open_with_default_app(app: &AppHandle, path: &std::path::Path) -> Result<String, String> {
+    app.state::<ios_open::Vexil<_>>()
+        .open_file(path.to_path_buf())
+        .map(|()| "Opened".to_string())
+}
+
+#[cfg(all(mobile, not(target_os = "ios")))]
+fn open_with_default_app(_app: &AppHandle, _path: &std::path::Path) -> Result<String, String> {
+    // Android opens through the `MainActivity` JS bridge, which owns the
+    // FileProvider/ACTION_VIEW plumbing; the frontend uses it instead of this
+    // command, so getting here means the bridge was missing.
+    Err("Opening files in another app needs the Android bridge, which is unavailable.".to_string())
 }
 
 #[tauri::command]
@@ -998,7 +1016,8 @@ pub fn run() {
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init());
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(ios_open::init());
 
     #[cfg(desktop)]
     {

@@ -1,7 +1,22 @@
 use std::path::Path;
 
+/// Native iOS plugin sources (see `ios/Package.swift`) are discovered by this
+/// build script: `tauri ios init` / `tauri ios build` read the emitted
+/// metadata and link the Swift package into the generated Xcode project.
+const PLUGIN_COMMANDS: &[&str] = &[];
+
 fn main() {
     tauri_build::build();
+
+    tauri_plugin::Builder::new(PLUGIN_COMMANDS)
+        .ios_path("ios")
+        .build();
+
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
+    let mobile = target_os == "ios" || target_os == "android";
+    alias("desktop", !mobile);
+    alias("mobile", mobile);
+
     println!("cargo:rerun-if-changed=licenses/vexil_public.key");
     println!("cargo:rerun-if-env-changed=VEXIL_PUBLIC_KEY");
 
@@ -27,4 +42,13 @@ fn main() {
         "No license public key available: set VEXIL_PUBLIC_KEY (base64) or provide \
          licenses/vexil_public.key"
     );
+}
+
+// creates a cfg alias if `has_feature` is true.
+// `alias` must be a snake case string.
+fn alias(alias: &str, has_feature: bool) {
+    println!("cargo:rustc-check-cfg=cfg({alias})");
+    if has_feature {
+        println!("cargo:rustc-cfg={alias}");
+    }
 }

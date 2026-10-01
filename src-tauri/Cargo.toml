@@ -5,6 +5,10 @@ description = "Vexil Local AI Search"
 authors = ["you"]
 edition = "2021"
 default-run = "vexil"
+# Required by tauri-plugin's build helper, which is what discovers the Swift
+# package in `ios/` during `tauri ios init` / `tauri ios build`.
+links = "vexil"
+build = "build.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -23,6 +27,7 @@ e2e = ["dep:tauri-plugin-wdio", "dep:tauri-plugin-wdio-webdriver"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+tauri-plugin = { version = "2", features = ["build"] }
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
@@ -66,3 +71,8 @@ tempfile = "3.27.0"
 
 [target."cfg(windows)".dependencies]
 winreg = "0.56.0"
+
+[target."cfg(target_os = \"ios\")".dependencies]
+# `tauri-plugin`'s build helper reads DEP_TAURI_IOS_LIBRARY_PATH from tauri, so
+# tauri has to be a real dependency on iOS for the Swift package to be linked.
+tauri = { version = "2", features = ["wry"], default-features = false }
