@@ -981,7 +981,9 @@ fn open_with_default_app(_app: &AppHandle, path: &std::path::Path) -> Result<Str
 /// `UIDocumentInteractionController` so the user can open it in another app.
 #[cfg(target_os = "ios")]
 fn open_with_default_app(app: &AppHandle, path: &std::path::Path) -> Result<String, String> {
-    app.state::<ios_open::Vexil<_>>()
+    // `AppHandle` defaults to `Wry`, which is the runtime iOS uses too, so the
+    // state type has to be spelled out: the `_` cannot be inferred here.
+    app.state::<ios_open::Vexil<tauri::Wry>>()
         .open_file(path.to_path_buf())
         .map(|()| "Opened".to_string())
 }
