@@ -743,6 +743,7 @@ fn order_browse_categories(existing: Vec<String>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::open_file_external;
     use super::order_browse_categories;
 
     #[test]
@@ -768,6 +769,32 @@ mod tests {
     #[test]
     fn handles_empty_input() {
         assert!(order_browse_categories(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn open_file_external_rejects_path_traversal() {
+        let err = open_file_external("/tmp/../etc/passwd".to_string()).unwrap_err();
+        assert!(err.contains("Security"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn open_file_external_rejects_relative_paths() {
+        let err = open_file_external("relative/clip.mp4".to_string()).unwrap_err();
+        assert!(err.contains("Security"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn open_file_external_rejects_missing_files() {
+        let missing = std::env::temp_dir().join("vexil-open-file-external-missing.mp4");
+        let err = open_file_external(missing.to_string_lossy().into_owned()).unwrap_err();
+        assert!(err.contains("Security"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn open_file_external_rejects_directories() {
+        let dir = std::env::temp_dir();
+        let err = open_file_external(dir.to_string_lossy().into_owned()).unwrap_err();
+        assert!(err.contains("Not a file"), "unexpected error: {err}");
     }
 }
 
@@ -911,6 +938,42 @@ fn open_in_explorer(path: String) -> Result<String, String> {
 
     opener::reveal(&valid_path).map_err(|e| e.to_string())?;
     Ok("Opened".to_string())
+}
+
+/// Opens a file in the OS default handler for its type (video player, image
+/// viewer, PDF reader, ...).
+///
+/// Android goes through the `MainActivity` JS bridge, which owns the
+/// FileProvider/`ACTION_VIEW` plumbing, so this command only has to serve
+/// desktop; `openResult` in the frontend prefers the bridge when it is present.
+#[tauri::command]
+fn open_file_external(path: String) -> Result<String, String> {
+    let allowed = security::AllowedRoots::new(true);
+    let valid_path = allowed
+        .validate(&path)
+        .map_err(|e| format!("Security: {}", e))?;
+
+    // `validate` canonicalizes, so a missing file already failed above; this
+    // catches directories, which canonicalize fine but have no default handler.
+    if !valid_path.is_file() {
+        return Err(format!("Not a file: {}", valid_path.display()));
+    }
+
+    open_with_default_app(&valid_path)
+}
+
+#[cfg(desktop)]
+fn open_with_default_app(path: &std::path::Path) -> Result<String, String> {
+    opener::open(path).map_err(|e| e.to_string())?;
+    Ok("Opened".to_string())
+}
+
+#[cfg(mobile)]
+fn open_with_default_app(_path: &std::path::Path) -> Result<String, String> {
+    // iOS has no bridge equivalent yet: `UIApplication.open` refuses local
+    // file:// urls, and handing the file to another app needs
+    // UIDocumentInteractionController / a share sheet.
+    Err("Opening files in another app is not supported on iOS yet.".to_string())
 }
 
 #[tauri::command]
@@ -1151,6 +1214,7 @@ pub fn run() {
             get_system_drives,
             get_directories,
             open_in_explorer,
+            open_file_external,
             get_index_stats,
             set_run_in_background,
             exit_app,

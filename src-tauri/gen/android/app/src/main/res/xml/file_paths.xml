@@ -1,5 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
+  <!-- Primary shared storage: /storage/emulated/0 (Movies, DCIM, Documents, Download, ...). -->
   <external-path name="my_images" path="." />
   <cache-path name="my_cache_images" path="." />
+  <!-- App-private and app-external dirs, used for files Vexil imports itself. -->
+  <files-path name="app_internal_files" path="." />
+  <external-files-path name="app_external_files" path="." />
+  <!--
+    Secondary volumes the folder picker can resolve to (e.g. /storage/1A2B-3C4D).
+    Scoped to /storage/ on purpose: a bare root-path of "/" would let this app
+    hand out content:// uris for any file on the device.
+  -->
+  <root-path name="secondary_volumes" path="/storage/" />
 </paths>

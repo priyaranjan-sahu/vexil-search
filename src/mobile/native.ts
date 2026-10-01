@@ -9,6 +9,11 @@ export interface VexilAndroidBridge {
   hasAllFilesAccess(): boolean;
   openAllFilesAccess(): void;
   pickFolder(): void;
+  /**
+   * Opens a file in the app that handles its type. Returns "" on success or a
+   * human-readable error.
+   */
+  openFile?(path: string): string;
 }
 
 declare global {
@@ -29,6 +34,22 @@ export const openAllFilesAccess = (): void => {
 
 export const pickFolder = (): void => {
   androidBridge()?.pickFolder();
+};
+
+/**
+ * Hands a file to the platform's default handler via the Android bridge.
+ *
+ * Returns undefined when the bridge is unavailable (iOS, desktop) so callers
+ * can fall back, "" when the file opened, and an error message otherwise.
+ */
+export const openFileWithAndroid = (path: string): string | undefined => {
+  const openFile = androidBridge()?.openFile;
+  if (!openFile) return undefined;
+  try {
+    return openFile(path);
+  } catch (e) {
+    return e instanceof Error ? e.message : `Could not open ${path}`;
+  }
 };
 
 /** Subscribes to a native CustomEvent; returns an unsubscribe function. */

@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { invoke } from "@tauri-apps/api/core";
-import { openPath } from "@tauri-apps/plugin-opener";
+import { openFileExternally } from "../lib/openExternal";
 import { hasProLicense } from "./licenseStore";
 
 let searchSeq = 0;
@@ -170,16 +170,10 @@ export const useSearchStore = create<SearchState>()(
       },
       openResult: async (item) => {
         const path = typeof item === "string" ? item : item.path;
-        try {
-          await openPath(path);
-        } catch (e) {
-          console.error("openPath failed", e);
-          try {
-            await invoke("open_in_explorer", { path });
-          } catch (explorerError) {
-            console.error("open_in_explorer failed", explorerError);
-            alert(`Could not open: ${path}`);
-          }
+        const error = await openFileExternally(path);
+        if (error) {
+          console.error("open failed", error);
+          alert(error);
         }
         if (typeof item !== "string") {
           set((state) => ({
