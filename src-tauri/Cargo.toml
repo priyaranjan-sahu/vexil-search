@@ -17,6 +17,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
 default = []
+# This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
+custom-protocol = ["tauri/custom-protocol"]
 e2e = ["dep:tauri-plugin-wdio", "dep:tauri-plugin-wdio-webdriver"]
 
 [build-dependencies]

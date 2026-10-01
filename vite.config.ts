@@ -13,6 +13,9 @@ export default defineConfig(() => ({
     globals: true,
     setupFiles: "./src/setupTests.ts",
     exclude: ["**/node_modules/**", "**/test/e2e/**"],
+    // Windows CI runners are slow enough that the default 5s budget is not
+    // enough to render the mobile tabs.
+    testTimeout: 20000,
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

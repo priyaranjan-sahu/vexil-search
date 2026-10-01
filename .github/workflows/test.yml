@@ -44,12 +44,9 @@ jobs:
       - name: Run Frontend Tests (Vitest)
         run: npm run test:unit
 
-      - name: Build Tauri app for E2E
-        run: npm run tauri build -- --debug
-        env:
-          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
-          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
-
+      # test:e2e builds the frontend itself and then compiles the debug binary
+      # with the custom-protocol feature, so the app embeds dist/ instead of
+      # pointing at the Vite dev server.
       - name: Run E2E Tests (WebdriverIO)
         uses: coactions/setup-xvfb@v1
         with:
