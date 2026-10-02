@@ -96,14 +96,22 @@ jobs:
       - name: Build Desktop App (PR Test)
         if: github.event_name == 'pull_request'
         run: npm run tauri build ${{ matrix.platform == 'macos-latest' && '-- --target universal-apple-darwin' || '' }}
+        env:
+          &desktop_test_env # Verification only; nothing is published from this step.
+          VEXIL_ALLOW_DEV_KEY: "1"
       - name: Build Desktop App (CI)
         if: github.event_name != 'pull_request' && github.event.inputs.release != 'true'
         run: npm run tauri build ${{ matrix.platform == 'macos-latest' && '-- --target universal-apple-darwin' || '' }}
+        env: *desktop_test_env
       - name: Publish Desktop Release
         if: github.event.inputs.release == 'true'
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # A release build refuses to fall back to the development signing
+          # key. Publishing therefore fails unless the production key is
+          # configured here.
+          VEXIL_PUBLIC_KEY: ${{ secrets.VEXIL_PUBLIC_KEY }}
         with:
           # __VERSION__ is substituted by tauri-action with the app version from
           # tauri.conf.json (e.g. 0.1.0 -> tag "0.1.0"). Each version re-runs
@@ -195,6 +203,8 @@ jobs:
         run: echo "RELEASE_TAG=$(node -p "require('./src-tauri/tauri.conf.json').version")" >> "$GITHUB_ENV"
       - name: Build Android APK (Release, signed)
         run: npm run tauri android build -- --apk
+        env:
+          VEXIL_PUBLIC_KEY: ${{ secrets.VEXIL_PUBLIC_KEY }}
       - name: Build Android APK (Debug, installable)
         run: npm run tauri android build -- --apk --debug
       # Upload APKs as run artifacts so they can be downloaded for testing
@@ -263,9 +273,13 @@ jobs:
       - name: Build iOS App (PR)
         if: github.event_name == 'pull_request'
         run: npm run tauri ios build -- --target aarch64-sim
+        env:
+          &ios_test_env # Verification only; the simulator artifact is never published.
+          VEXIL_ALLOW_DEV_KEY: "1"
       - name: Build iOS App (CI + Release)
         if: github.event_name != 'pull_request'
         run: npm run tauri ios build -- --target aarch64-sim
+        env: *ios_test_env
       # Note: physical-device .ipa builds require Apple Developer code signing certificates,
       # which are not configured; we build the simulator target so the release pipeline stays green.
   finalize-release:
