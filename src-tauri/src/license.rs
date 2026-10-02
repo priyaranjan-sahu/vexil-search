@@ -13,6 +13,21 @@ pub const CURRENT_PAYLOAD_VERSION: u32 = 2;
 /// changes, small drift) before refusing to honor the license.
 const CLOCK_ROLLBACK_GRACE_SECS: u64 = 86_400;
 
+/// Feature names the licensing worker grants. These strings are the contract
+/// between the signer and the app: they appear in `LicensePayload::features`
+/// and every gate below is keyed on them, never on the bare `pro` boolean.
+pub const FEATURE_BACKGROUND: &str = "background";
+pub const FEATURE_REMOVABLE_DRIVES: &str = "removable_drives";
+pub const FEATURE_UNLIMITED_PICKS: &str = "unlimited_picks";
+
+/// Every feature this build knows how to gate on. Used by `entitlements` so the
+/// UI can distinguish "not granted" from "unknown to this build".
+const KNOWN_FEATURES: &[&str] = &[
+    FEATURE_BACKGROUND,
+    FEATURE_REMOVABLE_DRIVES,
+    FEATURE_UNLIMITED_PICKS,
+];
+
 // Embedded by build.rs; either the `VEXIL_PUBLIC_KEY` env (base64) or the
 // committed dev key. Production builds must set VEXIL_PUBLIC_KEY to a real key.
 const PUBLIC_KEY_B64: &str = include_str!(concat!(env!("OUT_DIR"), "/vexil_public.key"));
@@ -319,6 +334,14 @@ pub fn get_license_status(app: AppHandle) -> LicenseStatus {
     status(&app)
 }
 
+/// Resolved feature list for the installed license. The frontend gates on this
+/// rather than re-deriving the rules, so the UI and the Rust gates can never
+/// disagree about what a license grants.
+#[tauri::command]
+pub fn get_entitlements(app: AppHandle) -> Vec<String> {
+    entitlements(&app)
+}
+
 #[tauri::command]
 pub fn install_license(app: AppHandle, license: String) -> Result<LicenseStatus, String> {
     install(&app, &license)?;
@@ -331,8 +354,42 @@ pub fn get_device_id() -> String {
     device_id()
 }
 
-pub fn user_is_pro(app: &AppHandle) -> bool {
-    status(app).pro
+/// True when the installed license explicitly grants `feature`.
+///
+/// Authorization is per-feature, never per-plan: a license that grants only
+/// `background` must not unlock removable drives. This is the single place
+/// that decision is made, so every gate routes through it.
+///
+/// Legacy carve-out: a signature-verified pro license that lists *no* features
+/// predates server-authoritative flags and is treated as granting everything.
+/// This is not a bypass — the signature must still verify against the embedded
+/// key, so only genuinely issued legacy licenses can reach it.
+pub fn has_feature(app: &AppHandle, feature: &str) -> bool {
+    let status = status(app);
+    if !status.pro {
+        return false;
+    }
+    if status.features.is_empty() {
+        return true;
+    }
+    status.features.iter().any(|f| f == feature)
+}
+
+/// The features this build will honor for the installed license, sorted and
+/// filtered to `KNOWN_FEATURES` so the UI never renders a name it cannot gate.
+pub fn entitlements(app: &AppHandle) -> Vec<String> {
+    let status = status(app);
+    if !status.pro {
+        return Vec::new();
+    }
+    if status.features.is_empty() {
+        return KNOWN_FEATURES.iter().map(|f| f.to_string()).collect();
+    }
+    KNOWN_FEATURES
+        .iter()
+        .filter(|f| status.features.iter().any(|granted| granted == *f))
+        .map(|f| f.to_string())
+        .collect()
 }
 
 #[cfg(test)]
@@ -513,5 +570,80 @@ mod tests {
     fn committed_public_key_is_valid_base64_key() {
         let key = public_key().unwrap();
         assert_eq!(key.to_bytes().len(), 32);
+    }
+
+    /// Mirrors the decision `has_feature`/`entitlements` make, so the logic can
+    /// be tested without an `AppHandle` (which needs a running Tauri app).
+    fn grants(pro: bool, granted: &[&str], feature: &str) -> bool {
+        if !pro {
+            return false;
+        }
+        if granted.is_empty() {
+            return true;
+        }
+        granted.contains(&feature)
+    }
+
+    fn resolved(pro: bool, granted: &[&str]) -> Vec<String> {
+        if !pro {
+            return Vec::new();
+        }
+        if granted.is_empty() {
+            return KNOWN_FEATURES.iter().map(|f| f.to_string()).collect();
+        }
+        KNOWN_FEATURES
+            .iter()
+            .filter(|f| granted.contains(f))
+            .map(|f| f.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn free_user_gets_nothing() {
+        assert!(!grants(false, &[], FEATURE_BACKGROUND));
+        assert!(!grants(false, &[FEATURE_BACKGROUND], FEATURE_BACKGROUND));
+        assert!(resolved(false, &[FEATURE_BACKGROUND]).is_empty());
+    }
+
+    #[test]
+    fn features_are_scoped_not_plan_wide() {
+        // A license granting only `background` must not unlock removable drives.
+        let granted = [FEATURE_BACKGROUND];
+        assert!(grants(true, &granted, FEATURE_BACKGROUND));
+        assert!(!grants(true, &granted, FEATURE_REMOVABLE_DRIVES));
+        assert!(!grants(true, &granted, FEATURE_UNLIMITED_PICKS));
+        assert_eq!(resolved(true, &granted), vec![FEATURE_BACKGROUND]);
+    }
+
+    #[test]
+    fn full_grant_unlocks_every_known_feature() {
+        let granted = [
+            FEATURE_BACKGROUND,
+            FEATURE_REMOVABLE_DRIVES,
+            FEATURE_UNLIMITED_PICKS,
+        ];
+        for f in KNOWN_FEATURES {
+            assert!(grants(true, &granted, f), "expected {f}");
+        }
+        assert_eq!(resolved(true, &granted).len(), KNOWN_FEATURES.len());
+    }
+
+    #[test]
+    fn unknown_granted_names_are_not_honored() {
+        // The signer must not be able to unlock something by naming it, and a
+        // stale grant for a removed feature must not leak through.
+        let granted = ["time_travel", "everything"];
+        assert!(!grants(true, &granted, FEATURE_BACKGROUND));
+        assert!(resolved(true, &granted).is_empty());
+    }
+
+    #[test]
+    fn legacy_pro_license_without_features_keeps_full_access() {
+        // Pre-authorization licenses listed no features and implied full Pro.
+        // Signature verification still gates this, so it is not a bypass.
+        for f in KNOWN_FEATURES {
+            assert!(grants(true, &[], f), "legacy license lost {f}");
+        }
+        assert_eq!(resolved(true, &[]).len(), KNOWN_FEATURES.len());
     }
 }

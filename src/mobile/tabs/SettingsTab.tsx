@@ -27,6 +27,7 @@ export const SettingsTab = ({
   const status = useLicenseStore((s) => s.status);
   const install = useLicenseStore((s) => s.install);
   const pro = status?.pro ?? false;
+  const entitlements = useLicenseStore((state) => state.entitlements);
 
   const [licInput, setLicInput] = useState("");
   const [licError, setLicError] = useState<string | null>(null);
@@ -95,6 +96,11 @@ export const SettingsTab = ({
                 ACTIVE · {status.plan.toUpperCase()}
               </span>
               {status.userId && <div>Licensed to: {status.userId}</div>}
+              {/* Resolved by the backend, not the raw signed list: a legacy
+                  license grants everything but lists nothing. */}
+              {entitlements.length > 0 && (
+                <div>Features: {entitlements.join(", ")}</div>
+              )}
               {status.expiresAt && (
                 <div>
                   Expires:{" "}

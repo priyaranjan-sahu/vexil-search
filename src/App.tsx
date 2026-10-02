@@ -57,6 +57,7 @@ function App() {
   } = useSearchStore();
 
   const pro = useLicenseStore((state) => state.status?.pro ?? false);
+  const entitlements = useLicenseStore((state) => state.entitlements);
   const licenseStatus = useLicenseStore((state) => state.status);
   const refreshLicense = useLicenseStore((state) => state.refresh);
   const licenseInstall = useLicenseStore((state) => state.install);
@@ -1022,7 +1023,9 @@ function App() {
                     <div>Licensed to: {licenseStatus.userId}</div>
                   )}
                   <div>
-                    Features: {licenseStatus.features.join(", ") || "—"}
+                    {/* Resolved by the backend, not the raw signed list: a
+                        legacy license grants everything but lists nothing. */}
+                    Features: {entitlements.join(", ") || "—"}
                   </div>
                   {licenseStatus.expiresAt && (
                     <div>

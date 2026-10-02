@@ -29,8 +29,21 @@ const LICENSE_SERVER = resolveLicenseServer(
   Boolean(import.meta.env.DEV),
 );
 
+/**
+ * Feature names the licensing worker grants. Must stay in sync with the
+ * constants in `src-tauri/src/license.rs` — that side is authoritative, and
+ * `get_entitlements` resolves the granted set there so the two cannot disagree.
+ */
+export const FEATURES = {
+  background: "background",
+  removableDrives: "removable_drives",
+  unlimitedPicks: "unlimited_picks",
+} as const;
+
 interface LicenseState {
   status: LicenseStatus | null;
+  /** Resolved by the Rust side; empty until loaded, which fails closed. */
+  entitlements: string[];
   refresh: () => Promise<void>;
   install: (license: string) => Promise<string | null>;
   activateWithEmail: (email: string) => Promise<string | null>;
@@ -38,10 +51,12 @@ interface LicenseState {
 
 export const useLicenseStore = create<LicenseState>()((set, get) => ({
   status: null,
+  entitlements: [],
   refresh: async () => {
     try {
       const status = await invoke<LicenseStatus>("get_license_status");
-      set({ status });
+      const entitlements = await invoke<string[]>("get_entitlements");
+      set({ status, entitlements });
     } catch (error) {
       console.error("Failed to fetch license status:", error);
     }
@@ -51,7 +66,8 @@ export const useLicenseStore = create<LicenseState>()((set, get) => ({
       const status = await invoke<LicenseStatus>("install_license", {
         license,
       });
-      set({ status });
+      const entitlements = await invoke<string[]>("get_entitlements");
+      set({ status, entitlements });
       return null;
     } catch (error) {
       return String(error);
@@ -85,5 +101,15 @@ export const useLicenseStore = create<LicenseState>()((set, get) => ({
   },
 }));
 
-export const hasProLicense = (): boolean =>
-  useLicenseStore.getState().status?.pro ?? false;
+/**
+ * True when the installed license grants `feature`.
+ *
+ * This is a UI hint only — the Rust gates in `lib.rs` and `license.rs` are the
+ * real enforcement and are keyed on the same feature strings. Never treat a
+ * `true` here as authorization for something the backend does not check.
+ *
+ * Fails closed: an empty entitlement list (not loaded yet, or no license)
+ * denies everything.
+ */
+export const hasFeature = (feature: string): boolean =>
+  useLicenseStore.getState().entitlements.includes(feature);

@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { TreeNode } from "./TreeNode";
 import { useSearchStore } from "../store/searchStore";
-import { useLicenseStore } from "../store/licenseStore";
+import { FEATURES, useLicenseStore } from "../store/licenseStore";
 export interface DriveInfo {
   path: string;
   name: string;
@@ -15,6 +15,9 @@ export const DirectoryTree = () => {
   const excludedDirs = useSearchStore((state) => state.excludedDirs);
   const setExcludedDirs = useSearchStore((state) => state.setExcludedDirs);
   const pro = useLicenseStore((state) => state.status?.pro ?? false);
+  const canIndexRemovable = useLicenseStore((state) =>
+    state.entitlements.includes(FEATURES.removableDrives),
+  );
 
   const [drives, setDrives] = useState<DriveInfo[]>([]);
 
@@ -50,7 +53,7 @@ export const DirectoryTree = () => {
           setExcludedDirs={setExcludedDirs}
           isRoot={true}
           isProOnly={drive.is_pro_only}
-          userIsPro={pro}
+          userIsPro={pro || canIndexRemovable}
         />
       ))}
     </div>

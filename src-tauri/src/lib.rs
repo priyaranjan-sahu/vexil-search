@@ -97,12 +97,13 @@ fn start_indexing(
     let mut valid_custom_dirs = Vec::new();
     if let Some(custom) = &custom_dirs {
         let allowed = security::AllowedRoots::new(true);
-        let is_pro = license::user_is_pro(&app_handle);
+        let can_index_removable =
+            license::has_feature(&app_handle, license::FEATURE_REMOVABLE_DRIVES);
         let mut errors = Vec::new();
         for dir in custom {
             match allowed.validate(dir) {
                 Ok(valid) => {
-                    if disk_is_pro_only(&valid) && !is_pro {
+                    if disk_is_pro_only(&valid) && !can_index_removable {
                         errors.push(format!(
                             "'{}': indexing removable drives is a Pro feature",
                             dir
@@ -998,7 +999,7 @@ fn open_with_default_app(_app: &AppHandle, _path: &std::path::Path) -> Result<St
 
 #[tauri::command]
 fn set_run_in_background(app_handle: AppHandle, enable: bool) -> Result<String, String> {
-    if enable && !license::user_is_pro(&app_handle) {
+    if enable && !license::has_feature(&app_handle, license::FEATURE_BACKGROUND) {
         return Err("Running in background is a Pro feature.".to_string());
     }
     if let Ok(mut bg) = app_handle.state::<AppState>().run_in_background.lock() {
@@ -1244,6 +1245,7 @@ pub fn run() {
             mobile::remove_mobile_root,
             mobile::import_mobile_files,
             license::get_license_status,
+            license::get_entitlements,
             license::install_license,
             license::get_device_id
         ])

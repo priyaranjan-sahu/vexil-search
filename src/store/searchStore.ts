@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { invoke } from "@tauri-apps/api/core";
 import { openFileExternally } from "../lib/openExternal";
-import { hasProLicense } from "./licenseStore";
+import { FEATURES, hasFeature } from "./licenseStore";
 
 let searchSeq = 0;
 let searchTimer: number | undefined;
@@ -124,7 +124,7 @@ export const useSearchStore = create<SearchState>()(
       setSelectedResult: (selectedResult) => set({ selectedResult }),
       addMyPick: (pick) => {
         const state = get();
-        if (!hasProLicense() && state.myPicks.length >= 5) {
+        if (!hasFeature(FEATURES.unlimitedPicks) && state.myPicks.length >= 5) {
           alert("Free tier is limited to 5 My Picks. Please upgrade to Pro.");
           return;
         }
@@ -159,7 +159,7 @@ export const useSearchStore = create<SearchState>()(
       setShowSettings: (showSettings) => set({ showSettings }),
       setShowAbout: (showAbout) => set({ showAbout }),
       setRunInBackground: (runInBackground) => {
-        if (runInBackground && !hasProLicense()) {
+        if (runInBackground && !hasFeature(FEATURES.background)) {
           alert("Running in background is a Pro feature.");
           return;
         }
