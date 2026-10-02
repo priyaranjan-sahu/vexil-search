@@ -32,6 +32,8 @@ permissions:
 jobs:
   quality-gates:
     runs-on: ubuntu-latest
+    env:
+      VITE_LICENSE_SERVER: ${{ vars.VITE_LICENSE_SERVER }}
     steps:
       # Releases are cut from private master only. Someone verifying a
       # feature branch here should use test_release, not release.
@@ -75,6 +77,24 @@ jobs:
         run: cargo install cargo-audit && cargo audit || true
       - name: Frontend Type Checking
         run: npx tsc --noEmit
+      # Tauri embeds dist/ brotli-compressed, so this cannot be checked by
+      # grepping a built artifact. Verifying it here is the only way to catch a
+      # missing activation endpoint before a customer does: without the URL,
+      # resolveLicenseServer yields an empty string and activate() fetches
+      # /activate against the app's own origin, failing every redemption.
+      - name: License Activation Endpoint Is Embedded
+        run: |
+          if [ -z "$VITE_LICENSE_SERVER" ]; then
+            echo "::error::repository variable VITE_LICENSE_SERVER is not set"
+            exit 1
+          fi
+          npx vite build
+          if grep -rqF "$VITE_LICENSE_SERVER" dist; then
+            echo "activation endpoint embedded: $VITE_LICENSE_SERVER"
+          else
+            echo "::error::$VITE_LICENSE_SERVER is not present in dist/ - activation will fail at runtime"
+            exit 1
+          fi
       - name: Rust Formatting
         run: cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
       - name: Rust Linter (Clippy)
