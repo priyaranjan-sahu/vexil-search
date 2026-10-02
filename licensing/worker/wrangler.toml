@@ -4,18 +4,19 @@ main = "src/index.js"
 compatibility_date = "2026-01-01"
 workers_dev = true
 
-# Replace REPLACE_ME with the ids from:
-#   wrangler kv namespace create CUSTOMERS
-#   wrangler kv namespace create SEATS
+# KV namespaces backing license issuance. These ids match the namespaces
+# already bound on the deployed worker (CUSTOMERS/SEATS), so `npm run deploy`
+# rebinds the same data instead of dropping every recorded customer and seat.
+# Create new ones with: wrangler kv namespace create CUSTOMERS
 [[kv_namespaces]]
 binding = "CUSTOMERS"
-id = "REPLACE_ME"
-preview_id = "REPLACE_ME"
+id = "5a10d37dcdd04c11bfcf84748a2fd175"
+preview_id = "5a10d37dcdd04c11bfcf84748a2fd175"
 
 [[kv_namespaces]]
 binding = "SEATS"
-id = "REPLACE_ME"
-preview_id = "REPLACE_ME"
+id = "45425161165e4af6864875d80274c2e7"
+preview_id = "45425161165e4af6864875d80274c2e7"
 
 [vars]
 # "paddle" | "buymeacoffee" | "auto" (auto detects the provider by signature
@@ -26,5 +27,5 @@ WEBHOOK_PROVIDER = "auto"
 # for multiple items. Leave empty to fail closed: no BMAC purchase can grant Pro.
 BMAC_PRO_PRODUCT_ID = ""
 # Set to "true" to also map active BMAC memberships to Pro licenses (started/
-# updated/cancelled/paused webhooks). Disabled by default.
+# updated/cancelled/active webhooks). Disabled by default.
 BMAC_SUPPORT_MEMBERSHIPS = "false"

@@ -1,0 +1,9 @@
+keys and local wrangler state must never be committed
+
+# wrangler local secrets
+.dev.vars
+
+# keypairs (the private half is a secret)
+licenses-prod/
+*.key
+src-tauri/licenses/*.key
