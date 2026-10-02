@@ -85,6 +85,10 @@ jobs:
         run: cargo test --manifest-path src-tauri/Cargo.toml
   build-and-release:
     needs: quality-gates
+    env:
+      # Vite bakes this into the bundle at build time; without it a production
+      # build has no activation endpoint and every Pro activation fails.
+      VITE_LICENSE_SERVER: ${{ vars.VITE_LICENSE_SERVER }}
     permissions:
       contents: write
     strategy:
@@ -170,6 +174,8 @@ jobs:
           done
   build-android:
     needs: quality-gates
+    env:
+      VITE_LICENSE_SERVER: ${{ vars.VITE_LICENSE_SERVER }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -273,6 +279,8 @@ jobs:
           done
   build-ios:
     needs: quality-gates
+    env:
+      VITE_LICENSE_SERVER: ${{ vars.VITE_LICENSE_SERVER }}
     runs-on: macos-latest
     steps:
       - name: Checkout Repository
