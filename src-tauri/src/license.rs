@@ -62,7 +62,9 @@ pub struct LicenseStatus {
     pub reason: String,
 }
 
-fn now_secs() -> u64 {
+/// Seconds since the Unix epoch. Exposed so other modules stamp rows with the
+/// same clock the license expiry check uses.
+pub fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -396,13 +398,6 @@ pub fn entitlements(app: &AppHandle) -> Vec<String> {
 mod tests {
     use super::*;
     use rand::rngs::OsRng;
-
-    fn now_secs() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
-    }
 
     fn sample_payload() -> LicensePayload {
         LicensePayload {

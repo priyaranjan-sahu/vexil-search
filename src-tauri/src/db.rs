@@ -1,8 +1,8 @@
 use rusqlite::{Connection, Result as SqlResult};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct SearchResult {
     pub id: i64,
     pub title: String,
@@ -84,6 +84,19 @@ pub fn setup_db(app_dir: &PathBuf) -> SqlResult<Connection> {
         [],
     )?;
 
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS my_picks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT NOT NULL UNIQUE,
+            title TEXT NOT NULL,
+            size INTEGER NOT NULL DEFAULT 0,
+            modified INTEGER NOT NULL DEFAULT 0,
+            category TEXT NOT NULL DEFAULT 'Other',
+            added_at INTEGER NOT NULL
+        )",
+        [],
+    )?;
+
     Ok(conn)
 }
 
@@ -110,5 +123,87 @@ mod tests {
 
         assert!(tables.contains(&"file_metadata".to_string()));
         assert!(tables.contains(&"file_index".to_string()));
+        assert!(tables.contains(&"my_picks".to_string()));
+    }
+
+    #[test]
+    fn my_picks_are_deduplicated_by_path() {
+        let dir = tempdir().unwrap();
+        let conn = setup_db(&dir.path().to_path_buf()).unwrap();
+        let now = 1_700_000_000_i64;
+
+        for _ in 0..2 {
+            conn.execute(
+                "INSERT OR IGNORE INTO my_picks (path, title, size, modified, category, added_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params!["/a/b.mp4", "b.mp4", 10_i64, 20_i64, "Video", now],
+            )
+            .unwrap();
+        }
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM my_picks", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "re-adding the same path must not duplicate");
+    }
+
+    #[test]
+    fn my_picks_persist_order_and_survive_reopen() {
+        let dir = tempdir().unwrap();
+        let app_dir = dir.path().to_path_buf();
+        let now = 1_700_000_000_i64;
+
+        {
+            let conn = setup_db(&app_dir).unwrap();
+            for path in ["/a/1.mp4", "/a/2.mp4", "/a/3.mp4"] {
+                conn.execute(
+                    "INSERT INTO my_picks (path, title, size, modified, category, added_at)
+                     VALUES (?1, ?2, 0, 0, 'Video', ?3)",
+                    rusqlite::params![path, "t", now],
+                )
+                .unwrap();
+            }
+        }
+
+        let conn = open_db(&db_path(&app_dir)).unwrap();
+        let paths: Vec<String> = conn
+            .prepare("SELECT path FROM my_picks ORDER BY added_at DESC, id DESC")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+
+        assert_eq!(paths, vec!["/a/3.mp4", "/a/2.mp4", "/a/1.mp4"]);
+    }
+
+    #[test]
+    fn removing_a_pick_is_scoped_to_one_id() {
+        let dir = tempdir().unwrap();
+        let conn = setup_db(&dir.path().to_path_buf()).unwrap();
+
+        conn.execute(
+            "INSERT INTO my_picks (path, title, size, modified, category, added_at)
+             VALUES ('/a/1.mp4', 'one', 0, 0, 'Video', 1)",
+            [],
+        )
+        .unwrap();
+        let id: i64 = conn
+            .query_row(
+                "SELECT id FROM my_picks WHERE path = '/a/1.mp4'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        let deleted = conn
+            .execute("DELETE FROM my_picks WHERE id = ?1", rusqlite::params![id])
+            .unwrap();
+
+        assert_eq!(deleted, 1);
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM my_picks", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0);
     }
 }

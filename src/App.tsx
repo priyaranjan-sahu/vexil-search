@@ -39,6 +39,7 @@ function App() {
     radarToast,
     setRadarToast,
     myPicks,
+    loadMyPicks,
     addMyPick,
     removeMyPick,
     recentItems,
@@ -119,6 +120,10 @@ function App() {
   useEffect(() => {
     refreshLicense();
   }, [refreshLicense]);
+
+  useEffect(() => {
+    loadMyPicks();
+  }, [loadMyPicks]);
 
   const [contextMenu, setContextMenu] = useState<{
     x: number;

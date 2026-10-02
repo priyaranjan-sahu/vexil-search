@@ -1,63 +1,95 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { invoke } from "@tauri-apps/api/core";
-import { useSearchStore } from "./searchStore";
+import { describe, expect, it, vi, beforeEach } from "vitest";
+import type { SearchResult } from "./searchStore";
 
-const invokeMock = vi.mocked(invoke);
+const invoke = vi.hoisted(() => vi.fn());
 
-beforeEach(() => {
-  invokeMock.mockReset();
-  useSearchStore.setState({
-    query: "",
-    results: [],
-    browseSections: [],
-    activeCategory: "All",
-  });
+vi.mock("@tauri-apps/api/core", () => ({ invoke }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
+
+const pick = (id: number): SearchResult => ({
+  id,
+  path: `/data/file${id}.mp4`,
+  size: id,
+  modified: 1_700_000_000,
+  category: "Video",
+  title: `file${id}.mp4`,
+  snippet: "",
+  relevance: 1,
 });
 
-describe("searchStore browse mode", () => {
-  it("loads browse sections when the query is empty", async () => {
-    invokeMock.mockResolvedValue([{ category: "Images", count: 3, files: [] }]);
+async function freshStore() {
+  vi.resetModules();
+  const mod = await import("./searchStore");
+  return mod.useSearchStore;
+}
 
-    await useSearchStore.getState().runSearch("");
+beforeEach(() => {
+  invoke.mockReset();
+  localStorage.clear();
+});
 
-    expect(invokeMock).toHaveBeenCalledWith("browse_files", {
-      category: "All",
-    });
-    expect(useSearchStore.getState().browseSections).toHaveLength(1);
-    expect(useSearchStore.getState().results).toEqual([]);
+describe("My Picks backend ownership", () => {
+  it("loads picks from the backend rather than local storage", async () => {
+    invoke.mockResolvedValue([pick(1), pick(2)]);
+    const useSearchStore = await freshStore();
+
+    await useSearchStore.getState().loadMyPicks();
+
+    expect(invoke).toHaveBeenCalledWith("list_my_picks");
+    expect(useSearchStore.getState().myPicks.map((p) => p.id)).toEqual([1, 2]);
   });
 
-  it("browses the active category for a whitespace-only query", async () => {
-    useSearchStore.setState({ activeCategory: "Music" });
-    invokeMock.mockResolvedValue([]);
+  it("persists an added pick through the backend", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "list_my_picks") return [pick(7)];
+      return undefined;
+    });
+    const useSearchStore = await freshStore();
 
-    await useSearchStore.getState().runSearch("   ");
+    await useSearchStore.getState().addMyPick(pick(7));
 
-    expect(invokeMock).toHaveBeenCalledWith("browse_files", {
-      category: "Music",
+    expect(invoke).toHaveBeenCalledWith("add_my_pick", { pick: pick(7) });
+    expect(useSearchStore.getState().myPicks.map((p) => p.id)).toEqual([7]);
+  });
+
+  it("does not re-add a pick that is already saved", async () => {
+    invoke.mockResolvedValue([pick(3)]);
+    const useSearchStore = await freshStore();
+
+    await useSearchStore.getState().loadMyPicks();
+    await useSearchStore.getState().addMyPick(pick(3));
+
+    expect(invoke).not.toHaveBeenCalledWith("add_my_pick", {
+      pick: pick(3),
     });
   });
 
-  it("clears browse sections once a search starts", async () => {
-    useSearchStore.setState({
-      browseSections: [{ category: "Images", count: 1, files: [] }],
-    });
-    invokeMock.mockResolvedValue([]);
+  it("surfaces the backend rejection when the free-tier cap is hit", async () => {
+    const alertSpy = vi.fn();
+    vi.stubGlobal("alert", alertSpy);
+    invoke.mockRejectedValue("Free tier is limited to 5 My Picks.");
+    const useSearchStore = await freshStore();
 
-    await useSearchStore.getState().runSearch("photo", true);
+    await useSearchStore.getState().addMyPick(pick(9));
 
-    expect(useSearchStore.getState().browseSections).toEqual([]);
-    expect(invokeMock).toHaveBeenCalledWith("search_files", {
-      query: "photo",
-      category: "All",
-    });
+    expect(alertSpy).toHaveBeenCalledWith(
+      "Free tier is limited to 5 My Picks.",
+    );
+    expect(useSearchStore.getState().myPicks).toEqual([]);
+    vi.unstubAllGlobals();
   });
 
-  it("ignores malformed browse responses", async () => {
-    invokeMock.mockResolvedValue(42);
+  it("rolls back the optimistic removal when the backend rejects it", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "list_my_picks") return [pick(4)];
+      if (cmd === "remove_my_pick") throw new Error("db locked");
+      return undefined;
+    });
+    const useSearchStore = await freshStore();
 
-    await useSearchStore.getState().runSearch("");
+    await useSearchStore.getState().loadMyPicks();
+    await useSearchStore.getState().removeMyPick(4);
 
-    expect(useSearchStore.getState().browseSections).toEqual([]);
+    expect(useSearchStore.getState().myPicks.map((p) => p.id)).toEqual([4]);
   });
 });

@@ -605,6 +605,102 @@ fn get_index_stats(app_handle: AppHandle) -> Result<usize, String> {
 const BROWSE_LIMIT: i64 = 50;
 const BROWSE_SECTION_LIMIT: i64 = 10;
 
+/// How many My Picks the free tier may keep. Enforced here rather than in the
+/// frontend so the cap cannot be bypassed by editing local storage.
+const FREE_PICK_LIMIT: usize = 5;
+
+#[tauri::command]
+fn list_my_picks(app_handle: AppHandle) -> Result<Vec<SearchResult>, String> {
+    let pool = app_handle.state::<db::DbPool>();
+    let conn = pool.get().map_err(|_| "DB pool error".to_string())?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT p.id, p.title, '', p.path, 0, p.size, p.modified, p.category
+             FROM my_picks p
+             ORDER BY p.added_at DESC, p.id DESC",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let picks = stmt
+        .query_map([], |row| {
+            Ok(SearchResult {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                snippet: String::new(),
+                path: row.get(3)?,
+                relevance: row.get(4)?,
+                size: row.get::<_, i64>(5)? as u64,
+                modified: row.get(6)?,
+                category: row.get(7)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<SearchResult>, rusqlite::Error>>()
+        .map_err(|e| e.to_string())?;
+
+    Ok(picks)
+}
+
+/// Adds a pick, enforcing the free-tier cap.
+///
+/// Re-adding an existing path is always allowed and is a no-op, so this cannot
+/// be used to lock a user out of their own saved items.
+#[tauri::command]
+fn add_my_pick(app_handle: AppHandle, pick: SearchResult) -> Result<(), String> {
+    let unlimited = license::has_feature(&app_handle, license::FEATURE_UNLIMITED_PICKS);
+    let pool = app_handle.state::<db::DbPool>();
+    let conn = pool.get().map_err(|_| "DB pool error".to_string())?;
+
+    let already_saved: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM my_picks WHERE path = ?1",
+            rusqlite::params![pick.path],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+
+    if already_saved > 0 {
+        return Ok(());
+    }
+
+    if !unlimited {
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM my_picks", [], |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+        if count as usize >= FREE_PICK_LIMIT {
+            return Err(format!(
+                "Free tier is limited to {FREE_PICK_LIMIT} My Picks. Please upgrade to Pro."
+            ));
+        }
+    }
+
+    conn.execute(
+        "INSERT OR IGNORE INTO my_picks (path, title, size, modified, category, added_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            pick.path,
+            pick.title,
+            pick.size as i64,
+            pick.modified,
+            pick.category,
+            license::now_secs() as i64
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+fn remove_my_pick(app_handle: AppHandle, id: i64) -> Result<(), String> {
+    let pool = app_handle.state::<db::DbPool>();
+    let conn = pool.get().map_err(|_| "DB pool error".to_string())?;
+    conn.execute("DELETE FROM my_picks WHERE id = ?1", rusqlite::params![id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[derive(serde::Serialize, Clone)]
 struct BrowseSection {
     category: String,
@@ -1247,7 +1343,10 @@ pub fn run() {
             license::get_license_status,
             license::get_entitlements,
             license::install_license,
-            license::get_device_id
+            license::get_device_id,
+            list_my_picks,
+            add_my_pick,
+            remove_my_pick
         ])
         .on_window_event(|window, event| if let WindowEvent::CloseRequested { api, .. } = event {
             let state = window.app_handle().state::<AppState>();

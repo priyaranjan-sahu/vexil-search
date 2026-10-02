@@ -65,58 +65,25 @@ describe("My Picks gate", () => {
       name: `f${i}`,
     }));
 
-  it("caps the free tier at 5 picks", () => {
-    useLicenseStore.setState({ entitlements: [] });
-    useSearchStore.setState({ myPicks: picks(5) as never });
-
-    useSearchStore.getState().addMyPick({
-      id: "extra",
-      path: "/extra",
-      name: "extra",
-    } as never);
-
-    expect(window.alert).toHaveBeenCalled();
-    expect(useSearchStore.getState().myPicks).toHaveLength(5);
-  });
-
-  it("does not cap a license that grants unlimited_picks", () => {
+  it("sends the pick for a license that grants unlimited_picks", async () => {
     useLicenseStore.setState({ entitlements: [FEATURES.unlimitedPicks] });
     useSearchStore.setState({ myPicks: picks(5) as never });
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "list_my_picks") return [...picks(5), { id: "extra" }];
+      return null;
+    });
 
-    useSearchStore.getState().addMyPick({
+    await useSearchStore.getState().addMyPick({
       id: "extra",
       path: "/extra",
       name: "extra",
     } as never);
 
+    expect(invokeMock).toHaveBeenCalledWith("add_my_pick", {
+      pick: { id: "extra", path: "/extra", name: "extra" },
+    });
     expect(window.alert).not.toHaveBeenCalled();
     expect(useSearchStore.getState().myPicks).toHaveLength(6);
-  });
-
-  it("caps a pro license that was granted only other features", () => {
-    // Regression guard: this used to key off the bare `pro` boolean.
-    useLicenseStore.setState({
-      status: {
-        pro: true,
-        plan: "pro",
-        features: [FEATURES.background],
-        userId: "u1",
-        issuedAt: 0,
-        expiresAt: null,
-        reason: "Licensed",
-      },
-      entitlements: [FEATURES.background],
-    });
-    useSearchStore.setState({ myPicks: picks(5) as never });
-
-    useSearchStore.getState().addMyPick({
-      id: "extra",
-      path: "/extra",
-      name: "extra",
-    } as never);
-
-    expect(window.alert).toHaveBeenCalled();
-    expect(useSearchStore.getState().myPicks).toHaveLength(5);
   });
 });
 

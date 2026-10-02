@@ -66,8 +66,9 @@ interface SearchState {
   setActiveSizeFilter: (filter: string) => void;
   setActiveDateFilter: (filter: string) => void;
   setSelectedResult: (result: SearchResult | null) => void;
-  addMyPick: (pick: SearchResult) => void;
-  removeMyPick: (id: number) => void;
+  loadMyPicks: () => Promise<void>;
+  addMyPick: (pick: SearchResult) => Promise<void>;
+  removeMyPick: (id: number) => Promise<void>;
   setRadarFiles: (paths: string[]) => void;
   setRadarToast: (toast: string | null) => void;
   setCustomDirs: (dirs: string[] | ((prev: string[]) => string[])) => void;
@@ -85,6 +86,12 @@ interface SearchState {
   handleCopyPath: () => void;
   handleDelete: () => Promise<void>;
 }
+
+/** Reads backend picks, treating a null/undefined reply as "no picks". */
+const readPicks = async (): Promise<SearchResult[]> => {
+  const rows = await invoke<SearchResult[] | null>("list_my_picks");
+  return Array.isArray(rows) ? rows : [];
+};
 
 export const useSearchStore = create<SearchState>()(
   persist(
@@ -122,22 +129,56 @@ export const useSearchStore = create<SearchState>()(
       setActiveSizeFilter: (activeSizeFilter) => set({ activeSizeFilter }),
       setActiveDateFilter: (activeDateFilter) => set({ activeDateFilter }),
       setSelectedResult: (selectedResult) => set({ selectedResult }),
-      addMyPick: (pick) => {
-        const state = get();
-        if (!hasFeature(FEATURES.unlimitedPicks) && state.myPicks.length >= 5) {
-          alert("Free tier is limited to 5 My Picks. Please upgrade to Pro.");
+
+      /**
+       * My Picks live in SQLite so the free-tier cap is enforced by the
+       * backend rather than by an edit to local storage. Anything still sitting
+       * in the persisted store is pushed across once, then dropped.
+       */
+      loadMyPicks: async () => {
+        const legacy: SearchResult[] = get().myPicks;
+        try {
+          let picks = await readPicks();
+
+          if (legacy.length > 0) {
+            for (const pick of legacy) {
+              try {
+                await invoke("add_my_pick", { pick });
+              } catch (error) {
+                // A legacy free-tier user may exceed the cap; keep what fits
+                // and drop the rest rather than failing the whole migration.
+                console.warn("Could not migrate pick:", error);
+              }
+            }
+            picks = await readPicks();
+          }
+
+          set({ myPicks: picks });
+        } catch (error) {
+          console.error("Failed to load My Picks:", error);
+        }
+      },
+      addMyPick: async (pick) => {
+        if (get().myPicks.some((p) => p.id === pick.id)) {
           return;
         }
-        set((state) => ({
-          myPicks: state.myPicks.some((p) => p.id === pick.id)
-            ? state.myPicks
-            : [...state.myPicks, pick],
-        }));
+        try {
+          await invoke("add_my_pick", { pick });
+          set({ myPicks: await invoke<SearchResult[]>("list_my_picks") });
+        } catch (error) {
+          alert(String(error));
+        }
       },
-      removeMyPick: (id) =>
-        set((state) => ({
-          myPicks: state.myPicks.filter((p) => p.id !== id),
-        })),
+      removeMyPick: async (id) => {
+        const previous = get().myPicks;
+        set({ myPicks: previous.filter((p) => p.id !== id) });
+        try {
+          await invoke("remove_my_pick", { id });
+        } catch (error) {
+          console.error("Failed to remove pick:", error);
+          set({ myPicks: previous });
+        }
+      },
       setRadarFiles: (radarFiles) => set({ radarFiles }),
       setRadarToast: (radarToast) => set({ radarToast }),
       setCustomDirs: (customDirs) =>
@@ -273,7 +314,9 @@ export const useSearchStore = create<SearchState>()(
     {
       name: "vexil-storage",
       partialize: (state) => ({
-        myPicks: state.myPicks,
+        // My Picks are intentionally absent: they are owned by the backend now,
+        // which is what enforces the free-tier cap. Leaving them here would
+        // re-run the one-time migration on every launch.
         recentItems: state.recentItems,
         theme: state.theme,
         shortcut: state.shortcut,

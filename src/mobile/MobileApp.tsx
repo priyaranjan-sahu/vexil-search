@@ -41,6 +41,7 @@ export const MobileApp = () => {
 
   const setIndexingProgress = useSearchStore((s) => s.setIndexingProgress);
   const setDbTotalCount = useSearchStore((s) => s.setDbTotalCount);
+  const loadMyPicks = useSearchStore((s) => s.loadMyPicks);
   const indexingProgress = useSearchStore((s) => s.indexingProgress);
   const dbTotalCount = useSearchStore((s) => s.dbTotalCount);
   const query = useSearchStore((s) => s.query);
@@ -178,7 +179,8 @@ export const MobileApp = () => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void refreshRoots();
     void triggerIndexing();
-  }, [refreshStats, refreshRoots, triggerIndexing]);
+    void loadMyPicks();
+  }, [refreshStats, refreshRoots, triggerIndexing, loadMyPicks]);
 
   // Debounced live search.
   useEffect(() => {
