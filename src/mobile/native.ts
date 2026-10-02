@@ -43,10 +43,14 @@ export const pickFolder = (): void => {
  * can fall back, "" when the file opened, and an error message otherwise.
  */
 export const openFileWithAndroid = (path: string): string | undefined => {
-  const openFile = androidBridge()?.openFile;
-  if (!openFile) return undefined;
+  const bridge = androidBridge();
+  // Must be invoked on the bridge object itself. Android's injected Java
+  // object throws "Java bridge method can't be invoked on a non-injected
+  // object" when the method is detached from it, so `bridge.openFile(path)`
+  // and not `const { openFile } = bridge; openFile(path)`.
+  if (typeof bridge?.openFile !== "function") return undefined;
   try {
-    return openFile(path);
+    return bridge.openFile(path);
   } catch (e) {
     return e instanceof Error ? e.message : `Could not open ${path}`;
   }

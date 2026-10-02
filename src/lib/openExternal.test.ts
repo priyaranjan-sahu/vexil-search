@@ -36,6 +36,42 @@ describe("openFileExternally", () => {
     expect(mockInvoke).not.toHaveBeenCalled();
   });
 
+  it("invokes the Android bridge with the bridge as receiver", async () => {
+    // Android's injected Java object refuses a detached call, so the receiver
+    // is load-bearing. A plain `vi.fn()` mock cannot catch a regression here.
+    const receivers: unknown[] = [];
+    const bridge = {
+      openFile(this: unknown) {
+        receivers.push(this);
+        return "";
+      },
+    };
+    setBridge(bridge);
+
+    expect(
+      await openFileExternally("/storage/emulated/0/Movies/clip.mp4"),
+    ).toBeNull();
+    expect(receivers).toEqual([bridge]);
+  });
+
+  it("is not rejected by a bridge that refuses detached calls", async () => {
+    const bridge = {
+      openFile(this: unknown) {
+        if (this !== bridge) {
+          throw new Error(
+            "Java bridge method can't be invoked on a non-injected object",
+          );
+        }
+        return "";
+      },
+    };
+    setBridge(bridge);
+
+    expect(
+      await openFileExternally("/storage/emulated/0/Movies/clip.mp4"),
+    ).toBeNull();
+  });
+
   it("returns the bridge error message", async () => {
     setBridge({ openFile: () => "No app on this device can open clip.mp4" });
 
