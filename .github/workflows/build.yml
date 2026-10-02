@@ -44,6 +44,12 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # This job only verifies that a release build compiles; it sets no
+          # tagName/releaseName, so it publishes nothing. `build.rs` refuses a
+          # release build that falls back to the dev license key, which is what
+          # makes the guard meaningful. Real publishing happens from
+          # priyaranjan-sahu/vexil-search, which passes VEXIL_PUBLIC_KEY.
+          VEXIL_ALLOW_DEV_KEY: "1"
         with:
           args: ${{ matrix.platform == 'macos-latest' && '--target universal-apple-darwin' || '' }}
 

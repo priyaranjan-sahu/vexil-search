@@ -11,9 +11,23 @@ export interface LicenseStatus {
   reason: string;
 }
 
-const LICENSE_SERVER =
-  (import.meta.env.VITE_LICENSE_SERVER as string | undefined) ??
-  "http://localhost:8787";
+/**
+ * Activation server. There is deliberately no production default: a shipped
+ * build that falls back to localhost silently talks to the user's own machine,
+ * so activation would fail confusingly instead of pointing at the real service.
+ * Dev/test builds get localhost so `npm run dev` works with no extra setup.
+ */
+export function resolveLicenseServer(
+  configured: string | undefined,
+  isDev: boolean,
+): string {
+  return configured?.trim() || (isDev ? "http://localhost:8787" : "");
+}
+
+const LICENSE_SERVER = resolveLicenseServer(
+  import.meta.env.VITE_LICENSE_SERVER as string | undefined,
+  Boolean(import.meta.env.DEV),
+);
 
 interface LicenseState {
   status: LicenseStatus | null;
@@ -44,6 +58,12 @@ export const useLicenseStore = create<LicenseState>()((set, get) => ({
     }
   },
   activateWithEmail: async (email: string) => {
+    if (!LICENSE_SERVER) {
+      return (
+        "This build has no activation server configured. " +
+        "Please use an offline activation key instead."
+      );
+    }
     try {
       const deviceId = await invoke<string>("get_device_id");
       const response = await fetch(`${LICENSE_SERVER}/activate`, {
