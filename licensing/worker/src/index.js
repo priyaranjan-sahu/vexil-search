@@ -28,6 +28,7 @@ import {
   verifyBmcWebhook,
   paddleEventState,
   bmcEventState,
+  unmappedReason,
   SEAT_LIMIT,
   PLAN,
   FEATURES,
@@ -123,7 +124,37 @@ async function handleWebhook(request, env) {
         });
 
   if (!next) {
-    return jsonOk({ received: true, ignored: true, type });
+    // Returning 200 here is deliberate: a non-2xx would make Paddle retry a
+    // payload that will never parse, burning its retry budget and then
+    // dropping the event anyway. So we stay 200 and make the failure loud
+    // instead of silent.
+    const reason = unmappedReason(event, provider, {
+      proProductId: env.BMAC_PRO_PRODUCT_ID,
+      supportMemberships: env.BMAC_SUPPORT_MEMBERSHIPS === "true",
+    });
+    if (reason === "unparsable_handled_event") {
+      // Loud on purpose: this is an event we subscribed to and understand, so
+      // failing to read it means a customer paid and got nothing. Surfaced via
+      // console.error so it shows in `wrangler tail` and Workers Logs.
+      console.error(
+        JSON.stringify({
+          alert: "unparsable_licensing_event",
+          provider,
+          event_type: type,
+          event_id: eventId || null,
+          reason:
+            "a subscribed event type arrived but no customer email could be read from it; " +
+            "the customer paid and will NOT be granted a license",
+          data_keys: Object.keys(event.data || {}),
+        }),
+      );
+    }
+    return jsonOk({
+      received: true,
+      ignored: true,
+      ignored_reason: reason,
+      type,
+    });
   }
 
   const customerKey = `customer:${next.email}`;

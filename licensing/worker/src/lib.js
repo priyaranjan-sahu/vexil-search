@@ -132,6 +132,40 @@ export function paddleEventState(event) {
   return null;
 }
 
+// The Paddle event types this worker subscribes to and acts on. Kept separate
+// from paddleEventState so index.js can tell "we deliberately ignore this
+// event" apart from "we act on this event but could not read it".
+export const PADDLE_HANDLED_TYPES = Object.freeze([
+  "transaction.completed",
+  "subscription.activated",
+  "subscription.updated",
+  "subscription.canceled",
+  "subscription.past_due",
+  "subscription.paused",
+  "subscription.ended",
+]);
+
+// Why an event produced no licensing change, or null when it did change state
+// and the caller should apply it.
+//
+// The distinction matters. An event type we never subscribed to is expected and
+// needs no attention. An event type we DO act on, but whose payload we could
+// not read, means a customer paid and is owed a license: the provider marks it
+// delivered, nothing retries, and without this distinction that is silent.
+export function unmappedReason(event, provider, opts = {}) {
+  if (provider === "paddle") {
+    return PADDLE_HANDLED_TYPES.includes(event?.event_type || "")
+      ? "unparsable_handled_event"
+      : "unhandled_event_type";
+  }
+  const type = event?.type || "";
+  const handled =
+    type === "extra_purchase.created" ||
+    type === "extra_purchase.refunded" ||
+    (opts.supportMemberships === true && type.startsWith("membership."));
+  return handled ? "unparsable_handled_event" : "unhandled_event_type";
+}
+
 // Parses a comma-separated list of product id/title matchers into entries.
 export function parseBmcProductSpec(spec) {
   return String(spec || "")

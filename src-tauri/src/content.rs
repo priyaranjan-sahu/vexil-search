@@ -222,7 +222,7 @@ mod tests {
 
     fn minimal_pdf(text: &str) -> Vec<u8> {
         let stream = format!("BT /F1 12 Tf 72 720 Td ({}) Tj ET", text);
-        let objects = vec![
+        let objects = [
             "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
             "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
             "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>".to_string(),
