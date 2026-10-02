@@ -3,6 +3,12 @@ mod ios_open;
 pub mod license;
 mod security;
 
+// Build scripts are never test targets, so the key-selection logic is shared
+// with `build.rs` and compiled here only under test.
+#[cfg(test)]
+#[path = "../build_key.rs"]
+mod build_key;
+
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use rusqlite::params;
 use serde::Serialize;
