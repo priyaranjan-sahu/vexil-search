@@ -1,0 +1,70 @@
+name: Public Repo Content Guard
+
+# The application source is private. This repo exists only to hold the pipeline
+# that checks out priyaranjan-sahu/vexil and builds it, plus the public
+# landing page. A stray push of source would publish code that was meant to stay
+# private, and it is easy to do by accident when a `git push` targets the wrong
+# remote. This job fails the build if anything outside the allowlist lands here.
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  no-application-source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this repository
+        uses: actions/checkout@v4
+        with:
+          # Pinned to this repo on purpose. The other jobs in builder.yml check
+          # out the private app into the workspace; this one must see only what
+          # is actually published here.
+          repository: priyaranjan-sahu/vexil-search
+          path: public-repo
+
+      - name: Fail on anything outside the public allowlist
+        working-directory: public-repo
+        run: |
+          set -euo pipefail
+
+          # Top-level entries this repository is allowed to contain: the
+          # workflows, the public site, its assets, and documentation.
+          allowed='^\.github/|^\.gitignore$|^\.gitattributes$|^CODEOWNERS$|^LICENSE|^README\.md$|^PRIVACY_POLICY\.md$|^TERMS_AND_CONDITIONS\.md$|^index\.html$|^assets/'
+
+          unexpected="$(git ls-files | grep -vE "$allowed" || true)"
+
+          if [ -n "$unexpected" ]; then
+            echo "::error::Application source found in the public repository."
+            echo "::error::Only workflows, the landing page, assets and docs belong here."
+            echo "::error::Offending paths:"
+            echo "$unexpected" | while read -r path; do
+              echo "::error::  $path"
+            done
+            exit 1
+          fi
+
+          echo "Public repository contains only public files."
+
+      - name: Fail on committed secrets or keys
+        working-directory: public-repo
+        run: |
+          set -euo pipefail
+
+          # Belt and braces for the allowlist above: even inside an allowed
+          # path, a private key or an environment file must never be committed.
+          # Deliberately narrow so it does not fire on workflow expressions such
+          # as ${{ secrets.PRIVATE_REPO_TOKEN }}.
+          if git ls-files | grep -iE '\.(pem|key|p12|keystore|jks|env)$|(^|/)\.env(\..*)?$' | grep -q .; then
+            echo "::error::A key, certificate or .env file is committed in the public repository."
+            git ls-files | grep -iE '\.(pem|key|p12|keystore|jks|env)$|(^|/)\.env(\..*)?$'
+            exit 1
+          fi
+
+          echo "No committed secrets or key material."
