@@ -12,6 +12,11 @@ on:
         type: boolean
         required: false
         default: false
+      ref:
+        description: "Private repo branch or tag to build (blank = master). Lets a feature branch be validated here on free public runners, because a pull_request in the private repo cannot trigger a workflow in this one."
+        type: string
+        required: false
+        default: ""
   push:
     branches: ["master"]
   pull_request:
@@ -22,13 +27,25 @@ jobs:
   quality-gates:
     runs-on: ubuntu-latest
     steps:
-      # PR events build the pull-request head; push/dispatch build the
-      # private master (the canonical source that releases ship from).
+      # Releases are cut from private master only. Someone verifying a
+      # feature branch here should use test_release, not release.
+      - name: Verify Release Runs Against Master
+        if: github.event.inputs.release == 'true'
+        run: |
+          ref="${{ inputs.ref }}"
+          if [ -n "$ref" ] && [ "$ref" != "refs/heads/master" ] && [ "$ref" != "master" ]; then
+            echo "::error::release=true is only valid for private master (got '$ref')."
+            echo "Use test_release=true to build a feature branch."
+            exit 1
+          fi
+      # PR events build the pull-request head; dispatch builds private
+      # master unless a ref is given; push builds the private master (the
+      # canonical source that releases ship from).
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           repository: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || 'priyaranjan-sahu/vexil' }}
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'refs/heads/master' }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.ref || 'refs/heads/master' }}
           token: ${{ github.event_name == 'pull_request' && secrets.GITHUB_TOKEN || secrets.PRIVATE_REPO_TOKEN }}
           path: .
       - name: Install Node.js
@@ -74,7 +91,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || 'priyaranjan-sahu/vexil' }}
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'refs/heads/master' }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.ref || 'refs/heads/master' }}
           token: ${{ github.event_name == 'pull_request' && secrets.GITHUB_TOKEN || secrets.PRIVATE_REPO_TOKEN }}
           path: .
       - name: Install Node.js
@@ -97,12 +114,17 @@ jobs:
         if: github.event_name == 'pull_request'
         run: npm run tauri build ${{ matrix.platform == 'macos-latest' && '-- --target universal-apple-darwin' || '' }}
         env:
-          &desktop_test_env # Verification only; nothing is published from this step.
+          # PR verification only: nothing is published from this step.
           VEXIL_ALLOW_DEV_KEY: "1"
       - name: Build Desktop App (CI)
         if: github.event_name != 'pull_request' && github.event.inputs.release != 'true'
         run: npm run tauri build ${{ matrix.platform == 'macos-latest' && '-- --target universal-apple-darwin' || '' }}
-        env: *desktop_test_env
+        env:
+          # A test_release dispatch uploads these installers to the private
+          # prerelease, so they are a distributed build and take the production
+          # key. A plain push produces throwaway verification artifacts only.
+          VEXIL_PUBLIC_KEY: ${{ github.event.inputs.test_release == 'true' && secrets.VEXIL_PUBLIC_KEY || '' }}
+          VEXIL_ALLOW_DEV_KEY: ${{ github.event.inputs.test_release != 'true' && '1' || '' }}
       - name: Publish Desktop Release
         if: github.event.inputs.release == 'true'
         uses: tauri-apps/tauri-action@v0
@@ -156,7 +178,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || 'priyaranjan-sahu/vexil' }}
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'refs/heads/master' }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.ref || 'refs/heads/master' }}
           token: ${{ github.event_name == 'pull_request' && secrets.GITHUB_TOKEN || secrets.PRIVATE_REPO_TOKEN }}
           path: .
       - name: Setup Java
@@ -252,7 +274,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || 'priyaranjan-sahu/vexil' }}
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'refs/heads/master' }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.ref || 'refs/heads/master' }}
           token: ${{ github.event_name == 'pull_request' && secrets.GITHUB_TOKEN || secrets.PRIVATE_REPO_TOKEN }}
           path: .
       - name: Install Node.js
