@@ -226,7 +226,12 @@ jobs:
       - name: Build Android APK (Release, signed)
         run: npm run tauri android build -- --apk
         env:
-          VEXIL_PUBLIC_KEY: ${{ secrets.VEXIL_PUBLIC_KEY }}
+          # Same rule as the desktop CI build: a test_release dispatch is
+          # distributed, so it takes the production key. A plain push or a
+          # branch verification dispatch is throwaway and keeps the dev key,
+          # which is what lets a branch be validated without the secret.
+          VEXIL_PUBLIC_KEY: ${{ github.event.inputs.test_release == 'true' && secrets.VEXIL_PUBLIC_KEY || '' }}
+          VEXIL_ALLOW_DEV_KEY: ${{ github.event.inputs.test_release != 'true' && '1' || '' }}
       - name: Build Android APK (Debug, installable)
         run: npm run tauri android build -- --apk --debug
       # Upload APKs as run artifacts so they can be downloaded for testing
@@ -295,6 +300,8 @@ jobs:
       - name: Build iOS App (CI + Release)
         run: npm run tauri ios build -- --target aarch64-sim
         env:
+          # Simulator target only; the artifact is never published.
+          VEXIL_ALLOW_DEV_KEY: "1"
       # Note: physical-device .ipa builds require Apple Developer code signing certificates,
       # which are not configured; we build the simulator target so the release pipeline stays green.
   finalize-release:
