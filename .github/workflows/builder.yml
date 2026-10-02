@@ -325,11 +325,22 @@ jobs:
         run: brew install xcodegen
       - name: Initialize iOS project
         run: npm run tauri ios init
+      - name: Stage production license key
+        # `tauri ios build` shells out to xcodebuild, whose Run Build Tool phase runs
+        # with a sanitized environment, so step-level env vars (VEXIL_PUBLIC_KEY and
+        # VEXIL_ALLOW_DEV_KEY alike) never reach build.rs. Stage the key as a file
+        # instead; build.rs prefers it over the committed development key and records
+        # in the build log which source it used.
+        run: |
+          mkdir -p src-tauri/licenses
+          printf '%s' "$VEXIL_PUBLIC_KEY" > src-tauri/licenses/vexil_public.prod.key
+          test -s src-tauri/licenses/vexil_public.prod.key
+        env:
+          VEXIL_PUBLIC_KEY: ${{ secrets.VEXIL_PUBLIC_KEY }}
       - name: Build iOS App (CI + Release)
         run: npm run tauri ios build -- --target aarch64-sim
-        env:
-          # Simulator target only; the artifact is never published.
-          VEXIL_ALLOW_DEV_KEY: "1"
+        # No VEXIL_ALLOW_DEV_KEY opt-in: the staged file above is the production key,
+        # so simulator builds validate genuine licenses end to end.
       # Note: physical-device .ipa builds require Apple Developer code signing certificates,
       # which are not configured; we build the simulator target so the release pipeline stays green.
   finalize-release:
