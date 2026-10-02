@@ -19,8 +19,14 @@ on:
         default: ""
   push:
     branches: ["master"]
-  pull_request:
-    branches: ["master"]
+  # No pull_request trigger. A pull_request here carries no application
+  # source (it lives in the private repo), so there is nothing to build,
+  # and the checkout would resolve to this repo and fail on the missing
+  # lock file. More importantly, private-source builds need
+  # PRIVATE_REPO_TOKEN, and running untrusted fork code with a token that
+  # can read the private repo would hand the source to anyone who opens
+  # a PR. Build a private branch with workflow_dispatch + ref instead.
+  # no-source-guard.yml validates this repo's own pull requests.
 permissions:
   contents: write
 jobs:
@@ -44,9 +50,9 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || 'priyaranjan-sahu/vexil' }}
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.ref || 'refs/heads/master' }}
-          token: ${{ github.event_name == 'pull_request' && secrets.GITHUB_TOKEN || secrets.PRIVATE_REPO_TOKEN }}
+          repository: priyaranjan-sahu/vexil
+          ref: ${{ inputs.ref || 'refs/heads/master' }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: .
       - name: Install Node.js
         uses: actions/setup-node@v4
@@ -90,9 +96,9 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || 'priyaranjan-sahu/vexil' }}
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.ref || 'refs/heads/master' }}
-          token: ${{ github.event_name == 'pull_request' && secrets.GITHUB_TOKEN || secrets.PRIVATE_REPO_TOKEN }}
+          repository: priyaranjan-sahu/vexil
+          ref: ${{ inputs.ref || 'refs/heads/master' }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: .
       - name: Install Node.js
         uses: actions/setup-node@v4
@@ -110,14 +116,8 @@ jobs:
           sudo apt-get install -y build-essential curl wget file libxdo-dev libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libglib2.0-dev patchelf rpm
       - name: Install NPM dependencies
         run: npm ci
-      - name: Build Desktop App (PR Test)
-        if: github.event_name == 'pull_request'
-        run: npm run tauri build ${{ matrix.platform == 'macos-latest' && '-- --target universal-apple-darwin' || '' }}
-        env:
-          # PR verification only: nothing is published from this step.
-          VEXIL_ALLOW_DEV_KEY: "1"
       - name: Build Desktop App (CI)
-        if: github.event_name != 'pull_request' && github.event.inputs.release != 'true'
+        if: github.event.inputs.release != 'true'
         run: npm run tauri build ${{ matrix.platform == 'macos-latest' && '-- --target universal-apple-darwin' || '' }}
         env:
           # A test_release dispatch uploads these installers to the private
@@ -177,9 +177,9 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || 'priyaranjan-sahu/vexil' }}
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.ref || 'refs/heads/master' }}
-          token: ${{ github.event_name == 'pull_request' && secrets.GITHUB_TOKEN || secrets.PRIVATE_REPO_TOKEN }}
+          repository: priyaranjan-sahu/vexil
+          ref: ${{ inputs.ref || 'refs/heads/master' }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: .
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -273,9 +273,9 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || 'priyaranjan-sahu/vexil' }}
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.ref || 'refs/heads/master' }}
-          token: ${{ github.event_name == 'pull_request' && secrets.GITHUB_TOKEN || secrets.PRIVATE_REPO_TOKEN }}
+          repository: priyaranjan-sahu/vexil
+          ref: ${{ inputs.ref || 'refs/heads/master' }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: .
       - name: Install Node.js
         uses: actions/setup-node@v4
@@ -292,16 +292,9 @@ jobs:
         run: brew install xcodegen
       - name: Initialize iOS project
         run: npm run tauri ios init
-      - name: Build iOS App (PR)
-        if: github.event_name == 'pull_request'
+      - name: Build iOS App (CI + Release)
         run: npm run tauri ios build -- --target aarch64-sim
         env:
-          &ios_test_env # Verification only; the simulator artifact is never published.
-          VEXIL_ALLOW_DEV_KEY: "1"
-      - name: Build iOS App (CI + Release)
-        if: github.event_name != 'pull_request'
-        run: npm run tauri ios build -- --target aarch64-sim
-        env: *ios_test_env
       # Note: physical-device .ipa builds require Apple Developer code signing certificates,
       # which are not configured; we build the simulator target so the release pipeline stays green.
   finalize-release:
