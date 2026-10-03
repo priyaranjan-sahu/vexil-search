@@ -17,6 +17,11 @@ on:
         type: string
         required: false
         default: ""
+  # A push to public master is treated exactly like a test_release dispatch: it
+  # builds and uploads to the private `mobile-test` prerelease. Push used to build
+  # every artifact and then upload nothing, because `github.event.inputs` is only
+  # populated for workflow_dispatch, so every `test_release == true` guard was
+  # false. See the TEST_DISTRIBUTION predicate below.
   push:
     branches: ["master"]
   # No pull_request trigger. A pull_request here carries no application
@@ -29,6 +34,18 @@ on:
   # no-source-guard.yml validates this repo's own pull requests.
 permissions:
   contents: write
+env:
+  # True when this run produces installable artifacts for the private
+  # `mobile-test` prerelease: a dispatch with test_release=true, or a push to
+  # public master. Derived once here rather than repeated across four call sites,
+  # which is what let push silently skip every upload.
+  TEST_DISTRIBUTION: ${{ github.event_name == 'push' || (github.event.inputs.test_release == 'true' && github.event.inputs.release != 'true') }}
+  # True when this run builds a binary a user can install: a push, a
+  # test_release dispatch, or a release dispatch. Deliberately broader than
+  # TEST_DISTRIBUTION - a release dispatch does not upload to the private
+  # prerelease, but its signed APK still ships, so it still needs the
+  # production key. Only a dispatch with both flags false is throwaway.
+  DISTRIBUTABLE: ${{ github.event_name == 'push' || github.event.inputs.test_release == 'true' || github.event.inputs.release == 'true' }}
 jobs:
   quality-gates:
     runs-on: ubuntu-latest
@@ -144,11 +161,11 @@ jobs:
         if: github.event.inputs.release != 'true'
         run: npm run tauri build ${{ matrix.platform == 'macos-latest' && '-- --target universal-apple-darwin' || '' }}
         env:
-          # A test_release dispatch uploads these installers to the private
-          # prerelease, so they are a distributed build and take the production
-          # key. A plain push produces throwaway verification artifacts only.
-          VEXIL_PUBLIC_KEY: ${{ github.event.inputs.test_release == 'true' && secrets.VEXIL_PUBLIC_KEY || '' }}
-          VEXIL_ALLOW_DEV_KEY: ${{ github.event.inputs.test_release != 'true' && '1' || '' }}
+          # Anything that reaches the private prerelease is a distributed build
+          # and takes the production key. Only a dispatch with both flags false
+          # (feature-branch verification without secrets) keeps the dev key.
+          VEXIL_PUBLIC_KEY: ${{ env.DISTRIBUTABLE == 'true' && secrets.VEXIL_PUBLIC_KEY || '' }}
+          VEXIL_ALLOW_DEV_KEY: ${{ env.DISTRIBUTABLE != 'true' && '1' || '' }}
       - name: Publish Desktop Release
         if: github.event.inputs.release == 'true'
         uses: tauri-apps/tauri-action@v0
@@ -171,10 +188,11 @@ jobs:
           args: ${{ matrix.platform == 'macos-latest' && '--target universal-apple-darwin' || '' }}
       # Private test-build distribution: upload the desktop installers to a
       # private prerelease on the private repo so builds can be installed and
-      # verified before a public `release` dispatch. Re-runs update assets in
-      # place (same tag). The private release is never visible publicly.
+      # verified before a public `release` dispatch. Runs on every push to
+      # public master as well as an explicit test_release dispatch. Re-runs
+      # update assets in place (same tag). Never visible publicly.
       - name: Upload Desktop to Private Test Release
-        if: github.event.inputs.test_release == 'true' && github.event.inputs.release != 'true'
+        if: env.TEST_DISTRIBUTION == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
@@ -252,12 +270,11 @@ jobs:
       - name: Build Android APK (Release, signed)
         run: npm run tauri android build -- --apk
         env:
-          # Same rule as the desktop CI build: a test_release dispatch is
-          # distributed, so it takes the production key. A plain push or a
-          # branch verification dispatch is throwaway and keeps the dev key,
-          # which is what lets a branch be validated without the secret.
-          VEXIL_PUBLIC_KEY: ${{ github.event.inputs.test_release == 'true' && secrets.VEXIL_PUBLIC_KEY || '' }}
-          VEXIL_ALLOW_DEV_KEY: ${{ github.event.inputs.test_release != 'true' && '1' || '' }}
+          # Same rule as the desktop CI build: a distributed build takes the
+          # production key. Only a dispatch with both flags false keeps the dev
+          # key, which is what lets a branch be validated without the secret.
+          VEXIL_PUBLIC_KEY: ${{ env.DISTRIBUTABLE == 'true' && secrets.VEXIL_PUBLIC_KEY || '' }}
+          VEXIL_ALLOW_DEV_KEY: ${{ env.DISTRIBUTABLE != 'true' && '1' || '' }}
       - name: Build Android APK (Debug, installable)
         run: npm run tauri android build -- --apk --debug
       # Upload APKs as run artifacts so they can be downloaded for testing
@@ -285,7 +302,7 @@ jobs:
       # Private test-build distribution: upload the release and debug APKs to
       # the same private prerelease the desktop jobs populate.
       - name: Upload APKs to Private Test Release
-        if: github.event.inputs.test_release == 'true' && github.event.inputs.release != 'true'
+        if: env.TEST_DISTRIBUTION == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
