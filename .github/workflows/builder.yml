@@ -190,7 +190,8 @@ jobs:
       # private prerelease on the private repo so builds can be installed and
       # verified before a public `release` dispatch. Runs on every push to
       # public master as well as an explicit test_release dispatch. Re-runs
-      # update assets in place (same tag). Never visible publicly.
+      # update assets in place (same tag); the stamp-test-release job records
+      # which run they came from. Never visible publicly.
       - name: Upload Desktop to Private Test Release
         if: env.TEST_DISTRIBUTION == 'true'
         shell: bash
@@ -360,6 +361,52 @@ jobs:
         # so simulator builds validate genuine licenses end to end.
       # Note: physical-device .ipa builds require Apple Developer code signing certificates,
       # which are not configured; we build the simulator target so the release pipeline stays green.
+  stamp-test-release:
+    # Records which run produced the `mobile-test` assets. GitHub dates a release
+    # by created_at, which never moves when assets are replaced in place, so a
+    # build uploaded today still reads "30 Sep" in the releases list. This is a
+    # job rather than a step inside each upload because the three desktop matrix
+    # legs and the Android job upload in parallel, and concurrent
+    # `gh release edit` calls would race on the same title and body.
+    if: env.TEST_DISTRIBUTION == 'true'
+    needs: [build-and-release, build-android]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Stamp Test Release with Build Details
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          TEST_TAG=mobile-test
+          TEST_REPO=priyaranjan-sahu/vexil
+          BUILT_AT=$(date -u '+%Y-%m-%d %H:%M UTC')
+          SHORT_SHA="${GITHUB_SHA:0:8}"
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+          # No backticks in this heredoc: an unquoted EOF would treat them as
+          # command substitution and blank the asset names out of the body.
+          NOTES=$(cat <<EOF
+          Latest test build, uploaded automatically by the public pipeline.
+
+          - Built: $BUILT_AT
+          - Commit: $SHORT_SHA
+          - Workflow run: $RUN_URL
+          - Trigger: $GITHUB_EVENT_NAME
+
+          Assets are replaced in place on every build, so only the newest build is
+          kept at this tag and each asset timestamp shows which run produced it.
+
+          - app-universal-release.apk is signed and contains the production license key.
+          - app-universal-debug.apk is installable for logcat work but contains the
+            development license key, so Pro entitlements will not validate against it.
+          EOF
+          )
+
+          gh release view "$TEST_TAG" --repo "$TEST_REPO" > /dev/null 2>&1 || \
+            gh release create "$TEST_TAG" --repo "$TEST_REPO" --prerelease \
+              --title "Vexil Search (test build)" --notes "Awaiting first upload."
+          gh release edit "$TEST_TAG" --repo "$TEST_REPO" \
+            --title "Vexil Search (test build) - $BUILT_AT" --notes "$NOTES"
   finalize-release:
     # Manual release runs only: demote the previous release by marking the new
     # versioned release as GitHub "Latest", then retire the legacy fixed
