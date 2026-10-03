@@ -97,7 +97,44 @@ pub fn setup_db(app_dir: &PathBuf) -> SqlResult<Connection> {
         [],
     )?;
 
+    // Small key/value store for app-owned singletons. Currently holds the
+    // licence clock watermark, so it deliberately lives in the database rather
+    // than alongside the other app files: clearing out the app data directory
+    // does not clear it.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS app_state (
+            key TEXT PRIMARY KEY,
+            value INTEGER NOT NULL
+        )",
+        [],
+    )?;
+
     Ok(conn)
+}
+
+/// Reads an app-owned singleton, `None` when absent or unreadable.
+pub fn get_app_state(pool: &DbPool, key: &str) -> Option<i64> {
+    let conn = pool.get().ok()?;
+    conn.query_row(
+        "SELECT value FROM app_state WHERE key = ?1",
+        rusqlite::params![key],
+        |row| row.get(0),
+    )
+    .ok()
+}
+
+/// Writes an app-owned singleton, never lowering an existing value.
+///
+/// The monotonic guard means a rolled-back or edited clock cannot walk the
+/// stored value backwards, so this stays a high-water mark even if the caller
+/// passes a stale timestamp.
+pub fn set_app_state(pool: &DbPool, key: &str, value: i64) {
+    let Ok(conn) = pool.get() else { return };
+    let _ = conn.execute(
+        "INSERT INTO app_state (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = MAX(app_state.value, excluded.value)",
+        rusqlite::params![key, value],
+    );
 }
 
 #[cfg(test)]
@@ -124,6 +161,34 @@ mod tests {
         assert!(tables.contains(&"file_metadata".to_string()));
         assert!(tables.contains(&"file_index".to_string()));
         assert!(tables.contains(&"my_picks".to_string()));
+        assert!(tables.contains(&"app_state".to_string()));
+    }
+
+    #[test]
+    fn app_state_never_lowers_an_existing_value() {
+        let dir = tempdir().unwrap();
+        let app_dir = dir.path().to_path_buf();
+        // Creates the schema, then hands the file to a pool like the app does.
+        drop(setup_db(&app_dir).unwrap());
+        let pool = r2d2::Pool::builder()
+            .max_size(1)
+            .build(r2d2_sqlite::SqliteConnectionManager::file(db_path(
+                &app_dir,
+            )))
+            .unwrap();
+
+        set_app_state(&pool, "license_seen_at", 1_700_000_000);
+        assert_eq!(get_app_state(&pool, "license_seen_at"), Some(1_700_000_000));
+
+        // A rolled-back or edited clock must not walk the high-water mark back.
+        set_app_state(&pool, "license_seen_at", 1_000);
+        assert_eq!(get_app_state(&pool, "license_seen_at"), Some(1_700_000_000));
+
+        // Forward progress still lands.
+        set_app_state(&pool, "license_seen_at", 1_800_000_000);
+        assert_eq!(get_app_state(&pool, "license_seen_at"), Some(1_800_000_000));
+
+        assert_eq!(get_app_state(&pool, "missing"), None);
     }
 
     #[test]

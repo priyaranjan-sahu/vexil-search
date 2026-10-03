@@ -849,6 +849,38 @@ fn order_browse_categories(existing: Vec<String>) -> Vec<String> {
 mod tests {
     use super::open_target_path;
     use super::order_browse_categories;
+    use super::path_is_indexed;
+    use crate::db;
+    use tempfile::tempdir;
+
+    #[test]
+    fn delete_only_targets_indexed_files() {
+        let dir = tempdir().unwrap();
+        let conn = db::setup_db(&dir.path().to_path_buf()).unwrap();
+        conn.execute(
+            "INSERT INTO file_metadata (path, mtime, size) VALUES (?1, 0, 0)",
+            rusqlite::params!["/scanned/report.pdf"],
+        )
+        .unwrap();
+
+        // A file the user actually found via search is deletable.
+        assert!(path_is_indexed(&conn, "/scanned/report.pdf", "/scanned/report.pdf").unwrap());
+        // Matches the raw input too, in case the scanner stored a different form.
+        assert!(path_is_indexed(&conn, "/canonical/x", "/scanned/report.pdf").unwrap());
+
+        // Anything outside the index is refused, which is what stops a
+        // compromised webview turning delete_file into arbitrary-file-delete.
+        for unindexed in [
+            "/Windows/System32/hal.dll",
+            "/etc/passwd",
+            "/some/random/place",
+        ] {
+            assert!(
+                !path_is_indexed(&conn, unindexed, unindexed).unwrap(),
+                "unexpectedly allowed: {unindexed}"
+            );
+        }
+    }
 
     #[test]
     fn orders_categories_in_canonical_order() {
@@ -1005,6 +1037,23 @@ fn get_directories(path: String) -> Result<Vec<DirEntry>, String> {
     Ok(dirs)
 }
 
+/// True when `path` is a file this install has indexed.
+///
+/// Both the canonicalized path and the raw input are matched because the index
+/// stores whichever form the scanner produced.
+fn path_is_indexed(
+    conn: &rusqlite::Connection,
+    canonical: &str,
+    raw: &str,
+) -> rusqlite::Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM file_metadata WHERE path = ?1 OR path = ?2",
+        params![canonical, raw],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
 #[tauri::command]
 fn delete_file(app_handle: AppHandle, path: String) -> Result<String, String> {
     let allowed = security::AllowedRoots::new(true);
@@ -1012,21 +1061,37 @@ fn delete_file(app_handle: AppHandle, path: String) -> Result<String, String> {
         .validate(&path)
         .map_err(|e| format!("Security: {}", e))?;
 
+    // Defence in depth behind the UI confirmation: only files this app actually
+    // indexed can be deleted. `AllowedRoots::new(true)` permits any absolute
+    // path by design, and the frontend confirmation is skipped entirely by a
+    // compromised webview, so without this the delete command is an
+    // arbitrary-file-delete primitive.
+    //
+    // Costs legitimate users nothing: a path outside the index cannot appear in
+    // search results or browse sections, so there is no way to select one. Both
+    // the canonical path and the raw input are matched because the index stores
+    // whichever form the scanner produced.
+    let canonical = valid_path.to_string_lossy().to_string();
+    let pool = app_handle.state::<db::DbPool>();
+    let conn = pool.get().map_err(|_| "DB pool error".to_string())?;
+    if !path_is_indexed(&conn, &canonical, &path).map_err(|e| format!("Security: {}", e))? {
+        return Err(
+            "Security: refusing to delete a file that is not in the Vexil index".to_string(),
+        );
+    }
+
     match fs::remove_file(&valid_path) {
         Ok(_) => {
             // Also remove from index
-            let pool = app_handle.state::<db::DbPool>();
-            if let Ok(conn) = pool.get() {
-                let valid_path_str = valid_path.to_string_lossy().to_string();
-                let _ = conn.execute(
-                    "DELETE FROM file_index WHERE path = ?1",
-                    params![valid_path_str],
-                );
-                let _ = conn.execute(
-                    "DELETE FROM file_metadata WHERE path = ?1",
-                    params![valid_path_str],
-                );
-            }
+            let valid_path_str = valid_path.to_string_lossy().to_string();
+            let _ = conn.execute(
+                "DELETE FROM file_index WHERE path = ?1",
+                params![valid_path_str],
+            );
+            let _ = conn.execute(
+                "DELETE FROM file_metadata WHERE path = ?1",
+                params![valid_path_str],
+            );
             Ok("File deleted".to_string())
         }
         Err(e) => Err(e.to_string()),

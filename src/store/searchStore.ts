@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { invoke } from "@tauri-apps/api/core";
 import { openFileExternally } from "../lib/openExternal";
+import { confirmDelete } from "../lib/confirmDelete";
 import { FEATURES, hasFeature } from "./licenseStore";
 
 let searchSeq = 0;
@@ -294,6 +295,7 @@ export const useSearchStore = create<SearchState>()(
       handleDelete: async () => {
         const selected = get().selectedResult;
         if (!selected) return;
+        if (!confirmDelete(selected.title, selected.path)) return;
         try {
           await invoke("delete_file", { path: selected.path });
           set((state) => ({

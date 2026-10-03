@@ -5,6 +5,7 @@ import { useSearchStore } from "../store/searchStore";
 import type { SearchResult } from "../store/searchStore";
 import { getPlatform } from "../lib/platform";
 import type { Platform } from "../lib/platform";
+import { confirmDelete } from "../lib/confirmDelete";
 import {
   ANDROID_EVENTS,
   TAURI_EVENTS,
@@ -227,6 +228,7 @@ export const MobileApp = () => {
           label: "Delete",
           danger: true,
           onSelect: () => {
+            if (!confirmDelete(result.title, result.path)) return;
             void (async () => {
               try {
                 await invoke("delete_file", { path: result.path });

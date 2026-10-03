@@ -6,6 +6,8 @@ use std::sync::OnceLock;
 
 use tauri::{AppHandle, Manager};
 
+use crate::db;
+
 pub const LICENSE_FILE: &str = "license.lic";
 pub const WATERMARK_FILE: &str = "license_seen_at";
 pub const CURRENT_PAYLOAD_VERSION: u32 = 2;
@@ -199,6 +201,9 @@ pub fn verify_license_text(
     let payload: LicensePayload =
         serde_json::from_slice(&body).map_err(|e| format!("Invalid license payload JSON: {e}"))?;
     payload_ok(&payload)?;
+    if is_clock_before_issue(&payload, now) {
+        return Err("System clock reads earlier than this license was issued".to_string());
+    }
     if is_expired(&payload, now) {
         return Err("License has expired".to_string());
     }
@@ -213,6 +218,18 @@ pub fn is_expired(payload: &LicensePayload, now: u64) -> bool {
 /// than the grace period (i.e. the clock was rolled back to dodge expiry).
 fn is_clock_rolled_back(now: u64, watermark: u64) -> bool {
     watermark > 0 && now + CLOCK_ROLLBACK_GRACE_SECS < watermark
+}
+
+/// True when the clock reads earlier than the license's own signed `issued_at`.
+///
+/// This is the strong check: `issued_at` lives inside the Ed25519-signed
+/// payload, so unlike the watermark it cannot be reset by deleting a file. It
+/// catches any rollback large enough to move the clock behind the license's
+/// issue date, which is what a user does to resurrect an expired subscription.
+/// The watermark still earns its place for rollbacks too small to cross
+/// `issued_at` on a long-lived license.
+pub fn is_clock_before_issue(payload: &LicensePayload, now: u64) -> bool {
+    now + CLOCK_ROLLBACK_GRACE_SECS < payload.issued_at
 }
 
 pub fn license_path(app: &AppHandle) -> PathBuf {
@@ -230,17 +247,42 @@ fn watermark_path(app: &AppHandle) -> PathBuf {
     dir.join(WATERMARK_FILE)
 }
 
+/// Key for the database half of the clock watermark. See [`read_watermark`].
+const WATERMARK_DB_KEY: &str = "license_seen_at";
+
+/// Highest clock reading this install has ever observed, across two
+/// independent stores.
+///
+/// Previously this read a single `license_seen_at` file, so deleting that one
+/// file reset the watermark to 0 and switched off the rollback check entirely.
+/// It now takes the maximum of the file and a row in the index database, so
+/// clearing one store leaves the other intact. Both stores only ever move
+/// forward, so the maximum is also the least manipulable value available.
+///
+/// This is still local state a determined user can erase, which is why
+/// [`is_clock_before_issue`] does the real work: it relies only on the signed
+/// payload.
 fn read_watermark(app: &AppHandle) -> u64 {
-    std::fs::read_to_string(watermark_path(app))
+    let from_file = std::fs::read_to_string(watermark_path(app))
         .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(0)
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .unwrap_or(0);
+
+    let from_db = app
+        .try_state::<db::DbPool>()
+        .and_then(|pool| db::get_app_state(&pool, WATERMARK_DB_KEY))
+        .unwrap_or(0);
+
+    from_file.max(from_db).max(0) as u64
 }
 
 fn write_watermark(app: &AppHandle, now: u64) {
-    let current = read_watermark(app);
-    if now > current {
-        let _ = std::fs::write(watermark_path(app), now.to_string());
+    if now <= read_watermark(app) {
+        return;
+    }
+    let _ = std::fs::write(watermark_path(app), now.to_string());
+    if let Some(pool) = app.try_state::<db::DbPool>() {
+        db::set_app_state(&pool, WATERMARK_DB_KEY, now as i64);
     }
 }
 
@@ -449,6 +491,48 @@ mod tests {
             now_secs()
         )
         .is_err());
+    }
+
+    #[test]
+    fn rejects_clock_reading_before_the_license_was_issued() {
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let verifying_key = signing_key.verifying_key();
+        let issued = now_secs();
+        let payload = LicensePayload {
+            issued_at: issued,
+            ..sample_payload()
+        };
+        let token = sign_payload(&signing_key, &payload).unwrap();
+
+        // Clock five years behind the issue date: the signature is valid and the
+        // license has no expiry, so only the issued_at check can catch this.
+        let rolled_back = issued - 5 * 365 * 86_400;
+        let err = verify_license_text(&token, &verifying_key, rolled_back).unwrap_err();
+        assert!(
+            err.contains("earlier than this license was issued"),
+            "{err}"
+        );
+
+        // A genuine install, where the clock runs ahead of the issue date, passes.
+        assert!(verify_license_text(&token, &verifying_key, now_secs()).is_ok());
+    }
+
+    #[test]
+    fn clock_before_issue_tolerates_small_drift() {
+        let payload = LicensePayload {
+            issued_at: 1_700_000_000,
+            ..sample_payload()
+        };
+        // Within the grace period before the issue date: allowed.
+        assert!(!is_clock_before_issue(
+            &payload,
+            1_700_000_000 - CLOCK_ROLLBACK_GRACE_SECS + 1
+        ));
+        // Comfortably before it: rejected.
+        assert!(is_clock_before_issue(
+            &payload,
+            1_700_000_000 - CLOCK_ROLLBACK_GRACE_SECS - 1
+        ));
     }
 
     #[test]
