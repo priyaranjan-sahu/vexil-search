@@ -368,7 +368,12 @@ jobs:
     # job rather than a step inside each upload because the three desktop matrix
     # legs and the Android job upload in parallel, and concurrent
     # `gh release edit` calls would race on the same title and body.
-    if: env.TEST_DISTRIBUTION == 'true'
+    #
+    # Spells out TEST_DISTRIBUTION instead of reading env.TEST_DISTRIBUTION: a
+    # job-level `if` may only use the github, needs, vars and inputs contexts, so
+    # referencing env here makes the whole workflow fail to compile with zero
+    # jobs. Only steps can read env.
+    if: github.event_name == 'push' || (github.event.inputs.test_release == 'true' && github.event.inputs.release != 'true')
     needs: [build-and-release, build-android]
     runs-on: ubuntu-latest
     steps:
