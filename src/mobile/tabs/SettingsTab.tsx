@@ -4,6 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useLicenseStore } from "../../store/licenseStore";
 import { useSearchStore, Theme } from "../../store/searchStore";
 import type { Platform } from "../../lib/platform";
+import { TRASH_RETENTION_DAYS } from "../../lib/confirmDelete";
 import type { MobileRoot } from "../types";
 import { openAllFilesAccess, pickFolder } from "../native";
 
@@ -24,6 +25,7 @@ export const SettingsTab = ({
 }) => {
   const theme = useSearchStore((s) => s.theme);
   const setTheme = useSearchStore((s) => s.setTheme);
+  const setShowTrash = useSearchStore((s) => s.setShowTrash);
   const status = useLicenseStore((s) => s.status);
   const install = useLicenseStore((s) => s.install);
   const pro = status?.pro ?? false;
@@ -225,6 +227,21 @@ export const SettingsTab = ({
             </button>
           </div>
         )}
+
+        <div className="mob-settings-group">
+          <div className="mob-settings-label">Trash</div>
+          <button
+            type="button"
+            className="mob-btn"
+            onClick={() => setShowTrash(true)}
+          >
+            Open Trash
+          </button>
+          <p className="mob-hint">
+            Deleted files stay here for {TRASH_RETENTION_DAYS} days and can be
+            put back.
+          </p>
+        </div>
 
         <div className="mob-settings-group">
           <div className="mob-settings-label">Vexil Search · v0.1.0</div>

@@ -109,6 +109,28 @@ pub fn setup_db(app_dir: &PathBuf) -> SqlResult<Connection> {
         [],
     )?;
 
+    // Files the user deleted, held in Vexil's own trash directory so they can be
+    // restored. `original_path` is where the file came from and is what a restore
+    // writes back to; `trash_path` is its current home under the trash directory.
+    // Rows whose file has been purged are removed, so a missing trash_path here
+    // means "restored, already restored, or emptied" rather than "lost silently".
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS trash (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            original_path TEXT NOT NULL,
+            trash_path TEXT NOT NULL,
+            name TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL DEFAULT 0,
+            deleted_at INTEGER NOT NULL
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_trash_deleted_at ON trash(deleted_at)",
+        [],
+    )?;
+
     Ok(conn)
 }
 

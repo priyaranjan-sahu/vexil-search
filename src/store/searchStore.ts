@@ -54,6 +54,7 @@ interface SearchState {
   shortcut: string;
   showSettings: boolean;
   showAbout: boolean;
+  showTrash: boolean;
   activeMenu: string | null;
   runInBackground: boolean;
 
@@ -78,6 +79,7 @@ interface SearchState {
   setShortcut: (shortcut: string) => void;
   setShowSettings: (show: boolean) => void;
   setShowAbout: (show: boolean) => void;
+  setShowTrash: (show: boolean) => void;
   setRunInBackground: (run: boolean) => void;
   setActiveMenu: (menu: string | null) => void;
   openResult: (result: SearchResult | string) => void;
@@ -117,6 +119,7 @@ export const useSearchStore = create<SearchState>()(
       shortcut: "CommandOrControl+Shift+Space",
       showSettings: false,
       showAbout: false,
+      showTrash: false,
       runInBackground: false,
       activeMenu: null,
 
@@ -200,6 +203,7 @@ export const useSearchStore = create<SearchState>()(
       setShortcut: (shortcut) => set({ shortcut }),
       setShowSettings: (showSettings) => set({ showSettings }),
       setShowAbout: (showAbout) => set({ showAbout }),
+      setShowTrash: (showTrash) => set({ showTrash }),
       setRunInBackground: (runInBackground) => {
         if (runInBackground && !hasFeature(FEATURES.background)) {
           alert("Running in background is a Pro feature.");

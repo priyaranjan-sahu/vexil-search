@@ -12,7 +12,6 @@ mod build_key;
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use rusqlite::params;
 use serde::Serialize;
-use std::fs;
 use std::path::PathBuf;
 use std::sync::mpsc::channel;
 use std::sync::Mutex;
@@ -26,6 +25,7 @@ use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
 mod db;
 mod mobile;
+mod trash;
 
 use db::{db_path, open_db, setup_db, SearchResult};
 
@@ -1080,22 +1080,52 @@ fn delete_file(app_handle: AppHandle, path: String) -> Result<String, String> {
         );
     }
 
-    match fs::remove_file(&valid_path) {
-        Ok(_) => {
-            // Also remove from index
-            let valid_path_str = valid_path.to_string_lossy().to_string();
-            let _ = conn.execute(
-                "DELETE FROM file_index WHERE path = ?1",
-                params![valid_path_str],
-            );
-            let _ = conn.execute(
-                "DELETE FROM file_metadata WHERE path = ?1",
-                params![valid_path_str],
-            );
-            Ok("File deleted".to_string())
-        }
-        Err(e) => Err(e.to_string()),
-    }
+    // Moved rather than erased, so it can be restored from the Trash panel. The
+    // OS recycle bin was not an option: it has no Android or iOS backend, and
+    // restoring through the file manager is not reachable from the app.
+    let name = valid_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| canonical.clone());
+    trash::move_to_trash(&pool, &trash::trash_dir(&app_handle), &valid_path)
+        .map_err(|e| format!("Could not move to trash: {e}"))?;
+
+    // Drop it from the index so it stops appearing in results and browse
+    // sections. A restore puts the file back on disk, and the live file watcher
+    // picks it up again from there.
+    let _ = conn.execute("DELETE FROM file_index WHERE path = ?1", params![canonical]);
+    let _ = conn.execute(
+        "DELETE FROM file_metadata WHERE path = ?1",
+        params![canonical],
+    );
+
+    Ok(format!("Moved \"{name}\" to Trash"))
+}
+
+/// Everything currently in the Trash panel, newest first.
+#[tauri::command]
+fn trash_items(app_handle: AppHandle) -> Result<Vec<trash::TrashItem>, String> {
+    let pool = app_handle.state::<db::DbPool>();
+    trash::list(&pool)
+}
+
+/// Puts a trashed file back where it came from. Returns the path it landed on.
+#[tauri::command]
+fn restore_trashed_file(app_handle: AppHandle, id: i64) -> Result<String, String> {
+    let pool = app_handle.state::<db::DbPool>();
+    trash::restore(&pool, id)
+}
+
+/// Permanently deletes everything in the trash.
+#[tauri::command]
+fn empty_trash(app_handle: AppHandle) -> Result<String, String> {
+    let pool = app_handle.state::<db::DbPool>();
+    let removed = trash::empty(&pool)?;
+    Ok(match removed {
+        0 => "Trash was already empty".to_string(),
+        1 => "1 file permanently deleted".to_string(),
+        n => format!("{n} files permanently deleted"),
+    })
 }
 
 #[tauri::command]
@@ -1266,6 +1296,13 @@ pub fn run() {
             let pool = r2d2::Pool::builder().max_size(4).build(manager).expect("Failed to create DB pool");
             app.manage(pool);
 
+            // Clear out trash that has outlived the retention window, so a device
+            // that is never short on storage cannot accumulate deleted files
+            // forever. Best-effort: failing to tidy up must not stop startup.
+            if let Err(e) = trash::purge_expired(&app.state::<db::DbPool>()) {
+                log::warn!("Trash cleanup skipped: {e}");
+            }
+
             app.manage(AppState {
                 run_in_background: Mutex::new(false),
             });
@@ -1400,6 +1437,9 @@ pub fn run() {
             search_files,
             browse_files,
             delete_file,
+            trash_items,
+            restore_trashed_file,
+            empty_trash,
             get_system_drives,
             get_directories,
             open_in_explorer,

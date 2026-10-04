@@ -19,6 +19,7 @@ import { SearchTab } from "./tabs/SearchTab";
 import { PicksTab } from "./tabs/PicksTab";
 import { RecentTab } from "./tabs/RecentTab";
 import { SettingsTab } from "./tabs/SettingsTab";
+import { TrashPanel } from "../components/TrashPanel";
 import { ActionSheet } from "./components/ActionSheet";
 import type { ActionSheetAction } from "./components/ActionSheet";
 
@@ -48,6 +49,8 @@ export const MobileApp = () => {
   const query = useSearchStore((s) => s.query);
   const activeCategory = useSearchStore((s) => s.activeCategory);
   const runSearch = useSearchStore((s) => s.runSearch);
+  const showTrash = useSearchStore((s) => s.showTrash);
+  const setShowTrash = useSearchStore((s) => s.setShowTrash);
 
   const refreshStats = useCallback(async () => {
     try {
@@ -343,6 +346,16 @@ export const MobileApp = () => {
           </button>
         ))}
       </nav>
+
+      {showTrash && (
+        <TrashPanel
+          onClose={() => setShowTrash(false)}
+          onChanged={() => {
+            void runSearch(query);
+            void useSearchStore.getState().runBrowse();
+          }}
+        />
+      )}
 
       {actionResult && (
         <ActionSheet
