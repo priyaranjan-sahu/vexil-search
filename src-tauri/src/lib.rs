@@ -1055,12 +1055,6 @@ fn path_is_indexed(
     Ok(count > 0)
 }
 
-fn path_hash(canonical: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(canonical.as_bytes());
-    hex::encode(hasher.finalize())
-}
 
 #[tauri::command]
 fn delete_file(

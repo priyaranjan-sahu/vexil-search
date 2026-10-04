@@ -22,7 +22,7 @@ pub fn create_delete_token(app_handle: AppHandle, path: String) -> Result<String
     }
     let token = uuid::Uuid::new_v4().to_string();
     let ph = path_hash(&canonical);
-    let expires_at = (chrono::Utc::now().timestamp() as i64) + 600;
+    let expires_at = (chrono::Utc::now().timestamp()) + 600;
     conn.execute(
         "INSERT OR REPLACE INTO delete_tokens(token, path_hash, expires_at, used) VALUES (?1, ?2, ?3, 0)",
         params![&token, &ph, expires_at],
@@ -43,7 +43,7 @@ pub fn consume_delete_token(
     let canonical = valid_path.to_string_lossy().to_string();
     let pool = app_handle.state::<crate::db::DbPool>();
     let conn = pool.get().map_err(|_| "DB pool error".to_string())?;
-    let now = chrono::Utc::now().timestamp() as i64;
+    let now = chrono::Utc::now().timestamp();
     let ph = path_hash(&canonical);
     let res: rusqlite::Result<(i32, i64)> = conn.query_row(
         "SELECT used, expires_at FROM delete_tokens WHERE token = ?1 AND path_hash = ?2",
@@ -69,6 +69,7 @@ pub fn consume_delete_token(
     }
 }
 
+#[allow(dead_code)]
 pub fn validate_delete_token(
     app_handle: &AppHandle,
     token: &str,
@@ -76,7 +77,7 @@ pub fn validate_delete_token(
 ) -> Result<bool, String> {
     let pool = app_handle.state::<crate::db::DbPool>();
     let conn = pool.get().map_err(|_| "DB pool error".to_string())?;
-    let now = chrono::Utc::now().timestamp() as i64;
+    let now = chrono::Utc::now().timestamp();
     let ph = path_hash(canonical);
     let res: rusqlite::Result<(i32, i64)> = conn.query_row(
         "SELECT used, expires_at FROM delete_tokens WHERE token = ?1 AND path_hash = ?2",
