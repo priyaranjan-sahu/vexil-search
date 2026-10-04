@@ -301,7 +301,10 @@ export const useSearchStore = create<SearchState>()(
         if (!selected) return;
         if (!confirmDelete(selected.title, selected.path)) return;
         try {
-          await invoke("delete_file", { path: selected.path });
+          const token = await invoke<string>("create_delete_token", {
+            path: selected.path,
+          });
+          await invoke("delete_file", { path: selected.path, token });
           set((state) => ({
             results: state.results.filter((r) => r.id !== selected.id),
             browseSections: state.browseSections.map((section) => ({

@@ -234,7 +234,10 @@ export const MobileApp = () => {
             if (!confirmDelete(result.title, result.path)) return;
             void (async () => {
               try {
-                await invoke("delete_file", { path: result.path });
+                const token = await invoke<string>("create_delete_token", {
+                  path: result.path,
+                });
+                await invoke("delete_file", { path: result.path, token });
                 const s = useSearchStore.getState();
                 useSearchStore.setState({
                   results: s.results.filter((r) => r.id !== result.id),

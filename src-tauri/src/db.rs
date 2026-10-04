@@ -131,6 +131,27 @@ pub fn setup_db(app_dir: &PathBuf) -> SqlResult<Connection> {
         [],
     )?;
 
+    // Ephemeral confirmation tokens for destructive actions (delete). A token is
+    // path-bound, single-use and time-limited (10 minutes) so a compromised
+    // webview cannot replay or guess it.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS delete_tokens (
+            token TEXT PRIMARY KEY,
+            path_hash TEXT NOT NULL,
+            expires_at INTEGER NOT NULL,
+            used INTEGER NOT NULL DEFAULT 0
+        )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_delete_tokens_path_hash ON delete_tokens(path_hash)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_delete_tokens_expires_at ON delete_tokens(expires_at)",
+        [],
+    )?;
+
     Ok(conn)
 }
 

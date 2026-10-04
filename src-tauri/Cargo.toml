@@ -54,6 +54,10 @@ base64 = "0.22"
 rand = "0.8"
 zip = "8.6.0"
 quick-xml = "0.42.0"
+hex = "0.4"
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }
+chrono = "0.4"
 pdf-extract = "0.12.1"
 
 
@@ -77,3 +81,4 @@ winreg = "0.56.0"
 # `tauri-plugin`'s build helper reads DEP_TAURI_IOS_LIBRARY_PATH from tauri, so
 # tauri has to be a real dependency on iOS for the Swift package to be linked.
 tauri = { version = "2", features = ["wry"], default-features = false }
+hex = "0.4"

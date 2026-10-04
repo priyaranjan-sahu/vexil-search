@@ -632,8 +632,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
+ "js-sys",
  "num-traits",
  "serde",
+ "wasm-bindgen",
  "windows-link 0.2.1",
 ]
 
@@ -5548,8 +5550,10 @@ name = "vexil"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "chrono",
  "dirs 7.0.0",
  "ed25519-dalek",
+ "hex",
  "ignore",
  "log",
  "notify",
@@ -5563,6 +5567,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sysinfo",
  "tauri",
  "tauri-build",
@@ -5573,6 +5578,7 @@ dependencies = [
  "tauri-plugin-wdio",
  "tauri-plugin-wdio-webdriver",
  "tempfile",
+ "uuid",
  "winreg 0.56.0",
  "zip",
 ]
