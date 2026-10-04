@@ -936,7 +936,7 @@ mod tests {
 
 use sysinfo::Disks;
 
-fn disk_is_pro_only(path: &std::path::Path) -> bool {
+pub(crate) fn disk_is_pro_only(path: &std::path::Path) -> bool {
     for disk in Disks::new_with_refreshed_list().list() {
         if disk.is_removable() && path.starts_with(disk.mount_point()) {
             return true;
