@@ -278,8 +278,16 @@ jobs:
           VEXIL_ALLOW_DEV_KEY: ${{ env.DISTRIBUTABLE != 'true' && '1' || '' }}
       - name: Build Android APK (Debug, installable)
         run: npm run tauri android build -- --apk --debug
-      # Upload APKs as run artifacts so they can be downloaded for testing
+      # Upload APKs as run artifacts so they can be downloaded for testing.
+      # Gated on TEST_DISTRIBUTION for the same reason the upload steps below
+      # are: a run artifact is a public download, and on a dispatch with both
+      # flags false there is no signing key, so the APK would be signed with the
+      # DEVELOPMENT key. Without this guard a throwaway verification run still
+      # published an installable, wrongly-signed APK that anyone with the run URL
+      # could fetch. The build itself is deliberately left unguarded so the
+      # throwaway path stays useful for compile and test verification.
       - name: Upload APKs as Artifacts
+        if: env.TEST_DISTRIBUTION == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: android-apks
