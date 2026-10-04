@@ -1055,7 +1055,6 @@ fn path_is_indexed(
     Ok(count > 0)
 }
 
-
 #[tauri::command]
 fn delete_file(
     app_handle: AppHandle,
