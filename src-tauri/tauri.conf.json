@@ -31,7 +31,6 @@
   "bundle": {
     "active": true,
     "targets": ["msi", "nsis", "app", "dmg", "deb", "rpm", "appimage"],
-    "artifactName": "Vexil-Search-${version}-${target}${ext}",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
