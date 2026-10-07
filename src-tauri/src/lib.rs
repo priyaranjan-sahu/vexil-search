@@ -25,7 +25,6 @@ use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
 mod db;
 mod mobile;
-mod tokens;
 mod trash;
 
 use db::{db_path, open_db, setup_db, SearchResult};
@@ -1056,11 +1055,7 @@ fn path_is_indexed(
 }
 
 #[tauri::command]
-fn delete_file(
-    app_handle: AppHandle,
-    path: String,
-    _token: Option<String>,
-) -> Result<String, String> {
+fn delete_file(app_handle: AppHandle, path: String) -> Result<String, String> {
     let allowed = security::AllowedRoots::new(true);
     let valid_path = allowed
         .validate(&path)
@@ -1462,9 +1457,7 @@ pub fn run() {
             license::get_device_id,
             list_my_picks,
             add_my_pick,
-            remove_my_pick,
-            tokens::create_delete_token,
-            tokens::consume_delete_token,
+            remove_my_pick
         ])
         .on_window_event(|window, event| if let WindowEvent::CloseRequested { api, .. } = event {
             let state = window.app_handle().state::<AppState>();
