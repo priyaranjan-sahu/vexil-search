@@ -67,6 +67,16 @@ android {
     buildFeatures {
         buildConfig = true
     }
+    
+    applicationVariants.all {
+        val variant = this
+        variant.outputs.all {
+            val outputImpl = this as com.android.build.gradle.internal.api.BaseVariantOutputImpl
+            val isRelease = variant.name.toLowerCase().contains("release")
+            val suffix = if (isRelease) "" else "-debug"
+            outputImpl.outputFileName = "Vexil-Search-${variant.versionName}${suffix}.apk"
+        }
+    }
 }
 
 rust {

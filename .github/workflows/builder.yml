@@ -1,0 +1,458 @@
+name: Build and Release Private Repo
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Publish a versioned GitHub release (manual release push)"
+        type: boolean
+        required: false
+        default: false
+      test_release:
+        description: "Upload a test build (APKs + desktop installers) to a private prerelease on the private repo"
+        type: boolean
+        required: false
+        default: false
+      ref:
+        description: "Private repo branch or tag to build (blank = master). Lets a feature branch be validated here on free public runners, because a pull_request in the private repo cannot trigger a workflow in this one."
+        type: string
+        required: false
+        default: ""
+  # A push to public master is treated exactly like a test_release dispatch: it
+  # builds and uploads to the private `mobile-test` prerelease. Push used to build
+  # every artifact and then upload nothing, because `github.event.inputs` is only
+  # populated for workflow_dispatch, so every `test_release == true` guard was
+  # false. See the TEST_DISTRIBUTION predicate below.
+  push:
+    branches: ["master"]
+  # No pull_request trigger. A pull_request here carries no application
+  # source (it lives in the private repo), so there is nothing to build,
+  # and the checkout would resolve to this repo and fail on the missing
+  # lock file. More importantly, private-source builds need
+  # PRIVATE_REPO_TOKEN, and running untrusted fork code with a token that
+  # can read the private repo would hand the source to anyone who opens
+  # a PR. Build a private branch with workflow_dispatch + ref instead.
+  # no-source-guard.yml validates this repo's own pull requests.
+permissions:
+  contents: write
+env:
+  # True when this run produces installable artifacts for the private
+  # `mobile-test` prerelease: a dispatch with test_release=true, or a push to
+  # public master. Derived once here rather than repeated across four call sites,
+  # which is what let push silently skip every upload.
+  TEST_DISTRIBUTION: ${{ github.event_name == 'push' || (github.event.inputs.test_release == 'true' && github.event.inputs.release != 'true') }}
+  # True when this run builds a binary a user can install: a push, a
+  # test_release dispatch, or a release dispatch. Deliberately broader than
+  # TEST_DISTRIBUTION - a release dispatch does not upload to the private
+  # prerelease, but its signed APK still ships, so it still needs the
+  # production key. Only a dispatch with both flags false is throwaway.
+  DISTRIBUTABLE: ${{ github.event_name == 'push' || github.event.inputs.test_release == 'true' || github.event.inputs.release == 'true' }}
+jobs:
+  quality-gates:
+    runs-on: ubuntu-latest
+    env:
+      VITE_LICENSE_SERVER: ${{ vars.VITE_LICENSE_SERVER }}
+    steps:
+      # Releases are cut from private master only. Someone verifying a
+      # feature branch here should use test_release, not release.
+      - name: Verify Release Runs Against Master
+        if: github.event.inputs.release == 'true'
+        run: |
+          ref="${{ inputs.ref }}"
+          if [ -n "$ref" ] && [ "$ref" != "refs/heads/master" ] && [ "$ref" != "master" ]; then
+            echo "::error::release=true is only valid for private master (got '$ref')."
+            echo "Use test_release=true to build a feature branch."
+            exit 1
+          fi
+      # PR events build the pull-request head; dispatch builds private
+      # master unless a ref is given; push builds the private master (the
+      # canonical source that releases ship from).
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          repository: priyaranjan-sahu/vexil
+          ref: ${{ inputs.ref || 'refs/heads/master' }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: .
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Install Ubuntu dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf rpm
+      - name: Install NPM dependencies
+        run: npm ci
+      - name: Frontend Security Audit (NPM)
+        run: npm audit --audit-level=high || true
+      - name: Backend Security Audit (Cargo)
+        run: cargo install cargo-audit && cargo audit || true
+      - name: Frontend Type Checking
+        run: npx tsc --noEmit
+      # Tauri embeds dist/ brotli-compressed, so this cannot be checked by
+      # grepping a built artifact. Verifying it here is the only way to catch a
+      # missing activation endpoint before a customer does: without the URL,
+      # resolveLicenseServer yields an empty string and activate() fetches
+      # /activate against the app's own origin, failing every redemption.
+      - name: License Activation Endpoint Is Embedded
+        run: |
+          if [ -z "$VITE_LICENSE_SERVER" ]; then
+            echo "::error::repository variable VITE_LICENSE_SERVER is not set"
+            exit 1
+          fi
+          npx vite build
+          if grep -rqF "$VITE_LICENSE_SERVER" dist; then
+            echo "activation endpoint embedded: $VITE_LICENSE_SERVER"
+          else
+            echo "::error::$VITE_LICENSE_SERVER is not present in dist/ - activation will fail at runtime"
+            exit 1
+          fi
+      - name: Rust Formatting
+        run: cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
+      - name: Rust Linter (Clippy)
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+      - name: Frontend Unit Tests
+        run: npm run test:unit --if-present
+      - name: Backend Unit Tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+  build-and-release:
+    needs: quality-gates
+    env:
+      # Vite bakes this into the bundle at build time; without it a production
+      # build has no activation endpoint and every Pro activation fails.
+      VITE_LICENSE_SERVER: ${{ vars.VITE_LICENSE_SERVER }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos-latest, ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          repository: priyaranjan-sahu/vexil
+          ref: ${{ inputs.ref || 'refs/heads/master' }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: .
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - name: Install Ubuntu dependencies
+        if: matrix.platform == 'ubuntu-24.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl wget file libxdo-dev libssl-dev libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libglib2.0-dev patchelf rpm
+      - name: Install NPM dependencies
+        run: npm ci
+      - name: Build Desktop App (CI)
+        if: github.event.inputs.release != 'true'
+        run: npm run tauri build ${{ matrix.platform == 'macos-latest' && '-- --target universal-apple-darwin' || '' }}
+        env:
+          # Anything that reaches the private prerelease is a distributed build
+          # and takes the production key. Only a dispatch with both flags false
+          # (feature-branch verification without secrets) keeps the dev key.
+          VEXIL_PUBLIC_KEY: ${{ env.DISTRIBUTABLE == 'true' && secrets.VEXIL_PUBLIC_KEY || '' }}
+          VEXIL_ALLOW_DEV_KEY: ${{ env.DISTRIBUTABLE != 'true' && '1' || '' }}
+      - name: Publish Desktop Release
+        if: github.event.inputs.release == 'true'
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # A release build refuses to fall back to the development signing
+          # key. Publishing therefore fails unless the production key is
+          # configured here.
+          VEXIL_PUBLIC_KEY: ${{ secrets.VEXIL_PUBLIC_KEY }}
+        with:
+          # __VERSION__ is substituted by tauri-action with the app version from
+          # tauri.conf.json (e.g. 0.1.0 -> tag "0.1.0"). Each version re-runs
+          # update assets in place; a version bump creates a new, permanent
+          # versioned release that never overwrites the previous one.
+          tagName: __VERSION__
+          releaseName: "Vexil Search __VERSION__"
+          releaseBody: "See the assets to download this version and install."
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.platform == 'macos-latest' && '--target universal-apple-darwin' || '' }}
+      # Private test-build distribution: upload the desktop installers to a
+      # private prerelease on the private repo so builds can be installed and
+      # verified before a public `release` dispatch. Runs on every push to
+      # public master as well as an explicit test_release dispatch. Re-runs
+      # update assets in place (same tag); the stamp-test-release job records
+      # which run they came from. Never visible publicly.
+      - name: Upload Desktop to Private Test Release
+        if: env.TEST_DISTRIBUTION == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          TEST_TAG=mobile-test
+          TEST_REPO=priyaranjan-sahu/vexil
+          gh release view "$TEST_TAG" --repo "$TEST_REPO" > /dev/null 2>&1 || \
+            gh release create "$TEST_TAG" --title "Vexil Search (test build)" --prerelease --repo "$TEST_REPO"
+          for f in src-tauri/target/release/bundle/*/* src-tauri/target/universal-apple-darwin/release/bundle/*/*; do
+            if [ -f "$f" ]; then
+              case "$f" in
+                *.dmg|*.msi|*.exe|*.deb|*.AppImage|*.rpm)
+                  gh release upload "$TEST_TAG" "$f" --repo "$TEST_REPO" --clobber
+                  ;;
+              esac
+            fi
+          done
+  build-android:
+    needs: quality-gates
+    env:
+      VITE_LICENSE_SERVER: ${{ vars.VITE_LICENSE_SERVER }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          repository: priyaranjan-sahu/vexil
+          ref: ${{ inputs.ref || 'refs/heads/master' }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: .
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: "zulu"
+          java-version: "17"
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+      - name: Install NPM dependencies
+        run: npm ci
+      - name: Install Android SDK & NDK
+        env:
+          ANDROID_HOME: /usr/local/lib/android/sdk
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" --install "ndk;27.0.12077973" "platforms;android-36" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+      - name: Configure Release Signing
+        if: env.VEXIL_KEYSTORE_B64 != ''
+        env:
+          VEXIL_KEYSTORE_B64: ${{ secrets.VEXIL_KEYSTORE_B64 }}
+          VEXIL_KEYSTORE_PASSWORD: ${{ secrets.VEXIL_KEYSTORE_PASSWORD }}
+          VEXIL_KEY_ALIAS: ${{ secrets.VEXIL_KEY_ALIAS }}
+          VEXIL_KEY_PASSWORD: ${{ secrets.VEXIL_KEY_PASSWORD }}
+        run: |
+          echo "$VEXIL_KEYSTORE_B64" | base64 -d > src-tauri/gen/android/app/vexil-release.keystore
+          cat > src-tauri/gen/android/app/keystore.properties <<EOF
+          storeFile=vexil-release.keystore
+          storePassword=$VEXIL_KEYSTORE_PASSWORD
+          keyAlias=$VEXIL_KEY_ALIAS
+          keyPassword=$VEXIL_KEY_PASSWORD
+          EOF
+      - name: Determine Release Tag
+        if: github.event.inputs.release == 'true'
+        run: echo "RELEASE_TAG=$(node -p "require('./src-tauri/tauri.conf.json').version")" >> "$GITHUB_ENV"
+      - name: Build Android APK (Release, signed)
+        run: npm run tauri android build -- --apk
+        env:
+          # Same rule as the desktop CI build: a distributed build takes the
+          # production key. Only a dispatch with both flags false keeps the dev
+          # key, which is what lets a branch be validated without the secret.
+          VEXIL_PUBLIC_KEY: ${{ env.DISTRIBUTABLE == 'true' && secrets.VEXIL_PUBLIC_KEY || '' }}
+          VEXIL_ALLOW_DEV_KEY: ${{ env.DISTRIBUTABLE != 'true' && '1' || '' }}
+      - name: Build Android APK (Debug, installable)
+        run: npm run tauri android build -- --apk --debug
+      # Upload APKs as run artifacts so they can be downloaded for testing.
+      # Gated on TEST_DISTRIBUTION for the same reason the upload steps below
+      # are: a run artifact is a public download, and on a dispatch with both
+      # flags false there is no signing key, so the APK would be signed with the
+      # DEVELOPMENT key. Without this guard a throwaway verification run still
+      # published an installable, wrongly-signed APK that anyone with the run URL
+      # could fetch. The build itself is deliberately left unguarded so the
+      # throwaway path stays useful for compile and test verification.
+      - name: Upload APKs as Artifacts
+        if: env.TEST_DISTRIBUTION == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apks
+          path: |
+            src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk
+            src-tauri/gen/android/app/build/outputs/apk/universal/debug/*.apk
+          if-no-files-found: error
+      # Upload the APK to the versioned release (same upload endpoint tauri-action uses).
+      # If the desktop jobs created the release first this simply appends the APK;
+      # otherwise we create the versioned release here.
+      - name: Upload APK to Release
+        if: github.event.inputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1 || gh release create "$RELEASE_TAG" --title "Vexil Search $RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
+          cd src-tauri/gen/android/app/build/outputs/apk/universal/release
+          for f in *.apk; do
+            gh release upload "$RELEASE_TAG" "$f" --repo "$GITHUB_REPOSITORY" --clobber
+          done
+      # Private test-build distribution: upload the release and debug APKs to
+      # the same private prerelease the desktop jobs populate.
+      - name: Upload APKs to Private Test Release
+        if: env.TEST_DISTRIBUTION == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          TEST_TAG=mobile-test
+          TEST_REPO=priyaranjan-sahu/vexil
+          gh release view "$TEST_TAG" --repo "$TEST_REPO" > /dev/null 2>&1 || \
+            gh release create "$TEST_TAG" --title "Vexil Search (test build)" --prerelease --repo "$TEST_REPO"
+          for f in src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk src-tauri/gen/android/app/build/outputs/apk/universal/debug/*.apk; do
+            gh release upload "$TEST_TAG" "$f" --repo "$TEST_REPO" --clobber
+          done
+  build-ios:
+    needs: quality-gates
+    env:
+      VITE_LICENSE_SERVER: ${{ vars.VITE_LICENSE_SERVER }}
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          repository: priyaranjan-sahu/vexil
+          ref: ${{ inputs.ref || 'refs/heads/master' }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: .
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,x86_64-apple-ios,aarch64-apple-ios-sim
+      - name: Install NPM dependencies
+        run: npm ci
+      - name: Install XcodeGen (required by tauri ios init)
+        run: brew install xcodegen
+      - name: Initialize iOS project
+        run: npm run tauri ios init
+      - name: Stage production license key
+        # `tauri ios build` shells out to xcodebuild, whose Run Build Tool phase runs
+        # with a sanitized environment, so step-level env vars (VEXIL_PUBLIC_KEY and
+        # VEXIL_ALLOW_DEV_KEY alike) never reach build.rs. Stage the key as a file
+        # instead; build.rs prefers it over the committed development key and records
+        # in the build log which source it used.
+        run: |
+          mkdir -p src-tauri/licenses
+          printf '%s' "$VEXIL_PUBLIC_KEY" > src-tauri/licenses/vexil_public.prod.key
+          test -s src-tauri/licenses/vexil_public.prod.key
+        env:
+          VEXIL_PUBLIC_KEY: ${{ secrets.VEXIL_PUBLIC_KEY }}
+      - name: Build iOS App (CI + Release)
+        run: npm run tauri ios build -- --target aarch64-sim
+        # No VEXIL_ALLOW_DEV_KEY opt-in: the staged file above is the production key,
+        # so simulator builds validate genuine licenses end to end.
+      # Note: physical-device .ipa builds require Apple Developer code signing certificates,
+      # which are not configured; we build the simulator target so the release pipeline stays green.
+  stamp-test-release:
+    # Records which run produced the `mobile-test` assets. GitHub dates a release
+    # by created_at, which never moves when assets are replaced in place, so a
+    # build uploaded today still reads "30 Sep" in the releases list. This is a
+    # job rather than a step inside each upload because the three desktop matrix
+    # legs and the Android job upload in parallel, and concurrent
+    # `gh release edit` calls would race on the same title and body.
+    #
+    # Spells out TEST_DISTRIBUTION instead of reading env.TEST_DISTRIBUTION: a
+    # job-level `if` may only use the github, needs, vars and inputs contexts, so
+    # referencing env here makes the whole workflow fail to compile with zero
+    # jobs. Only steps can read env.
+    if: github.event_name == 'push' || (github.event.inputs.test_release == 'true' && github.event.inputs.release != 'true')
+    needs: [build-and-release, build-android]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Stamp Test Release with Build Details
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          TEST_TAG=mobile-test
+          TEST_REPO=priyaranjan-sahu/vexil
+          BUILT_AT=$(date -u '+%Y-%m-%d %H:%M UTC')
+          SHORT_SHA="${GITHUB_SHA:0:8}"
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+          # No backticks in this heredoc: an unquoted EOF would treat them as
+          # command substitution and blank the asset names out of the body.
+          NOTES=$(cat <<EOF
+          Latest test build, uploaded automatically by the public pipeline.
+
+          - Built: $BUILT_AT
+          - Commit: $SHORT_SHA
+          - Workflow run: $RUN_URL
+          - Trigger: $GITHUB_EVENT_NAME
+
+          Assets are replaced in place on every build, so only the newest build is
+          kept at this tag and each asset timestamp shows which run produced it.
+
+          - Vexil-Search-*-release.apk is signed and contains the production license key.
+          - Vexil-Search-*-debug.apk is installable for logcat work but contains the
+            development license key, so Pro entitlements will not validate against it.
+          EOF
+          )
+
+          gh release view "$TEST_TAG" --repo "$TEST_REPO" > /dev/null 2>&1 || \
+            gh release create "$TEST_TAG" --repo "$TEST_REPO" --prerelease \
+              --title "Vexil Search (test build)" --notes "Awaiting first upload."
+          gh release edit "$TEST_TAG" --repo "$TEST_REPO" \
+            --title "Vexil Search (test build) - $BUILT_AT" --notes "$NOTES"
+  finalize-release:
+    # Manual release runs only: demote the previous release by marking the new
+    # versioned release as GitHub "Latest", then retire the legacy fixed
+    # "latest" tag/release so versioned releases become the single source of
+    # truth. Older versioned releases keep their tags and stay downloadable.
+    if: github.event.inputs.release == 'true'
+    needs: [build-and-release, build-android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          repository: priyaranjan-sahu/vexil
+          ref: refs/heads/master
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: .
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Determine Release Tag
+        run: echo "RELEASE_TAG=$(node -p "require('./src-tauri/tauri.conf.json').version")" >> "$GITHUB_ENV"
+      - name: Mark New Release as Latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --latest
+      - name: Remove Legacy 'latest' Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view latest --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1 && \
+             [ "$(gh release view latest --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)" != "$RELEASE_TAG" ]; then
+            gh release delete latest --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+          fi
