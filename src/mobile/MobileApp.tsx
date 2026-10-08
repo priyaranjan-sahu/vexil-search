@@ -6,6 +6,8 @@ import type { SearchResult } from "../store/searchStore";
 import { getPlatform } from "../lib/platform";
 import type { Platform } from "../lib/platform";
 import { confirmDelete } from "../lib/confirmDelete";
+import { useUpdateInfo, openReleasePage } from "../lib/updates";
+import { UpdateBanner } from "../components/UpdateBanner";
 import {
   ANDROID_EVENTS,
   TAURI_EVENTS,
@@ -40,6 +42,9 @@ export const MobileApp = () => {
   const [actionResult, setActionResult] = useState<SearchResult | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimerRef = useRef<number | undefined>(undefined);
+  // Notify-only on mobile: the banner links to the release page in the
+  // browser; installing stays manual (Play Store / sideloaded APK).
+  const { info: updateInfo, dismiss: dismissUpdate } = useUpdateInfo();
 
   const setIndexingProgress = useSearchStore((s) => s.setIndexingProgress);
   const setDbTotalCount = useSearchStore((s) => s.setDbTotalCount);
@@ -315,6 +320,15 @@ export const MobileApp = () => {
           )}
         </span>
       </header>
+
+      {updateInfo && (
+        <UpdateBanner
+          info={updateInfo}
+          actionLabel="Download"
+          onAction={() => void openReleasePage(updateInfo)}
+          onDismiss={dismissUpdate}
+        />
+      )}
 
       <main className="mob-main">
         {activeTab === "search" && <SearchTab onLongPress={openActionsFor} />}

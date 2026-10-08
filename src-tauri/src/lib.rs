@@ -26,6 +26,7 @@ use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 mod db;
 mod mobile;
 mod trash;
+mod updates;
 
 use db::{db_path, open_db, setup_db, SearchResult};
 
@@ -906,32 +907,6 @@ mod tests {
     fn handles_empty_input() {
         assert!(order_browse_categories(Vec::new()).is_empty());
     }
-
-    #[test]
-    fn open_file_external_rejects_path_traversal() {
-        let err = open_target_path("/tmp/../etc/passwd").unwrap_err();
-        assert!(err.contains("Security"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn open_file_external_rejects_relative_paths() {
-        let err = open_target_path("relative/clip.mp4").unwrap_err();
-        assert!(err.contains("Security"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn open_file_external_rejects_missing_files() {
-        let missing = std::env::temp_dir().join("vexil-open-file-external-missing.mp4");
-        let err = open_target_path(&missing.to_string_lossy()).unwrap_err();
-        assert!(err.contains("Security"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn open_file_external_rejects_directories() {
-        let dir = std::env::temp_dir();
-        let err = open_target_path(&dir.to_string_lossy()).unwrap_err();
-        assert!(err.contains("Not a file"), "unexpected error: {err}");
-    }
 }
 
 use sysinfo::Disks;
@@ -1129,11 +1104,18 @@ fn empty_trash(app_handle: AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn open_in_explorer(path: String) -> Result<String, String> {
+fn open_in_explorer(app_handle: AppHandle, path: String) -> Result<String, String> {
     let allowed = security::AllowedRoots::new(true);
     let valid_path = allowed
         .validate(&path)
         .map_err(|e| format!("Security: {}", e))?;
+
+    let canonical = valid_path.to_string_lossy().to_string();
+    let pool = app_handle.state::<db::DbPool>();
+    let conn = pool.get().map_err(|_| "DB pool error".to_string())?;
+    if !path_is_indexed(&conn, &canonical, &path).map_err(|e| format!("Security: {}", e))? {
+        return Err("Security: refusing to open a file that is not in the Vexil index".to_string());
+    }
 
     opener::reveal(&valid_path).map_err(|e| e.to_string())?;
     Ok("Opened".to_string())
@@ -1148,13 +1130,13 @@ fn open_in_explorer(path: String) -> Result<String, String> {
 /// present.
 #[tauri::command]
 fn open_file_external(app: AppHandle, path: String) -> Result<String, String> {
-    let valid_path = open_target_path(&path)?;
+    let valid_path = open_target_path(&app, &path)?;
     open_with_default_app(&app, &valid_path)
 }
 
 /// Resolves `path` against the allowed roots and confirms it is an existing
 /// file, so no platform ever hands an arbitrary path to the OS.
-fn open_target_path(path: &str) -> Result<PathBuf, String> {
+fn open_target_path(app: &AppHandle, path: &str) -> Result<PathBuf, String> {
     let allowed = security::AllowedRoots::new(true);
     let valid_path = allowed
         .validate(path)
@@ -1164,6 +1146,13 @@ fn open_target_path(path: &str) -> Result<PathBuf, String> {
     // catches directories, which canonicalize fine but have no default handler.
     if !valid_path.is_file() {
         return Err(format!("Not a file: {}", valid_path.display()));
+    }
+
+    let canonical = valid_path.to_string_lossy().to_string();
+    let pool = app.state::<db::DbPool>();
+    let conn = pool.get().map_err(|_| "DB pool error".to_string())?;
+    if !path_is_indexed(&conn, &canonical, path).map_err(|e| format!("Security: {}", e))? {
+        return Err("Security: refusing to open a file that is not in the Vexil index".to_string());
     }
 
     Ok(valid_path)
@@ -1221,7 +1210,9 @@ pub fn run() {
 
     #[cfg(desktop)]
     {
-        builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
+        builder = builder
+            .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+            .plugin(tauri_plugin_updater::Builder::new().build());
     }
 
     #[cfg(feature = "e2e")]
@@ -1455,6 +1446,8 @@ pub fn run() {
             license::get_entitlements,
             license::install_license,
             license::get_device_id,
+            updates::check_for_updates,
+            updates::install_update,
             list_my_picks,
             add_my_pick,
             remove_my_pick

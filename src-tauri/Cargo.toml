@@ -47,14 +47,16 @@ opener = { version = "0.8.5", features = ["reveal"] }
 ignore = "0.4.33"
 sysinfo = "0.32"
 log = "0.4"
-tauri-plugin-wdio-webdriver = { version = "1.4.0", optional = true }
-tauri-plugin-wdio = { version = "1.4.0", optional = true }
+tauri-plugin-wdio-webdriver = { version = "1.5.0", optional = true }
+tauri-plugin-wdio = { version = "1.5.0", optional = true }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 base64 = "0.22"
 rand = "0.8"
 zip = "8.6.0"
 quick-xml = "0.42.0"
 pdf-extract = "0.12.1"
+ureq = "3.4.2"
+semver = "1.0.28"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
@@ -72,6 +74,11 @@ tempfile = "3.27.0"
 
 [target."cfg(windows)".dependencies]
 winreg = "0.56.0"
+
+# In-app updates are a desktop feature: mobile installs go through the store
+# or a sideloaded APK, so the updater plugin is never built for those targets.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"
 
 [target."cfg(target_os = \"ios\")".dependencies]
 # `tauri-plugin`'s build helper reads DEP_TAURI_IOS_LIBRARY_PATH from tauri, so

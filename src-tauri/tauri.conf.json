@@ -38,5 +38,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE0REM3NEM0OUY1RDdDRDIKUldUU2ZGMmZ4SFRjcENjazVuUFFWV2RsMUhZK3BLMDNmWk42QzdyazJEZFNpSytRUDlvOXdRTmwK",
+      "endpoints": [
+        "https://github.com/priyaranjan-sahu/vexil-search/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

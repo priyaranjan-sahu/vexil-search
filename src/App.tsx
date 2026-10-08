@@ -10,6 +10,8 @@ import { DirectoryTree } from "./components/DirectoryTree";
 import { ResultsTable } from "./components/ResultsTable";
 import { TrashPanel } from "./components/TrashPanel";
 import { TRASH_RETENTION_DAYS } from "./lib/confirmDelete";
+import { useUpdateInfo, applyUpdate } from "./lib/updates";
+import { UpdateBanner } from "./components/UpdateBanner";
 import { useSearchStore, SearchResult, Theme } from "./store/searchStore";
 import { useLicenseStore } from "./store/licenseStore";
 
@@ -73,6 +75,8 @@ function App() {
   const [emailInput, setEmailInput] = useState("");
   const [emailError, setEmailError] = useState<string | null>(null);
   const [emailMessage, setEmailMessage] = useState<string | null>(null);
+
+  const { info: updateInfo, dismiss: dismissUpdate } = useUpdateInfo();
 
   const activateLicense = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -400,6 +404,14 @@ function App() {
 
   return (
     <div className="container">
+      {updateInfo && (
+        <UpdateBanner
+          info={updateInfo}
+          actionLabel="Update"
+          onAction={() => void applyUpdate(updateInfo)}
+          onDismiss={dismissUpdate}
+        />
+      )}
       {/* 1. Menu Bar */}
       <div className="menu-bar">
         <div
