@@ -324,7 +324,7 @@ jobs:
           # Name the APK like the desktop installers so release assets read
           # consistently (e.g. Vexil-Search-0.2.0-android-universal-release.apk).
           for f in *.apk; do
-            gh release upload "$RELEASE_TAG" "Vexil-Search-${RELEASE_TAG}-${f}#${f}" --repo "$GITHUB_REPOSITORY" --clobber
+            gh release upload "$RELEASE_TAG" "${f}#Vexil-Search-${RELEASE_TAG}-${f}" --repo "$GITHUB_REPOSITORY" --clobber
           done
       # Private test-build distribution: upload the release and debug APKs to
       # the same private prerelease the desktop jobs populate.
