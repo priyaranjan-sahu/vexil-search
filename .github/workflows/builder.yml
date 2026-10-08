@@ -166,6 +166,16 @@ jobs:
           # (feature-branch verification without secrets) keeps the dev key.
           VEXIL_PUBLIC_KEY: ${{ env.DISTRIBUTABLE == 'true' && secrets.VEXIL_PUBLIC_KEY || '' }}
           VEXIL_ALLOW_DEV_KEY: ${{ env.DISTRIBUTABLE != 'true' && '1' || '' }}
+      # Updater bundles are signed with TAURI_SIGNING_PRIVATE_KEY while they
+      # are built, so createUpdaterArtifacts is enabled only for a real
+      # release (the one run that has the signing secret). Local and
+      # feature-branch builds keep it off and need no updater key.
+      - name: Enable Updater Artifacts
+        if: github.event.inputs.release == 'true'
+        shell: bash
+        run: |
+          jq '.bundle.createUpdaterArtifacts = true' src-tauri/tauri.conf.json > tauri.conf.json.tmp
+          mv tauri.conf.json.tmp src-tauri/tauri.conf.json
       - name: Publish Desktop Release
         if: github.event.inputs.release == 'true'
         uses: tauri-apps/tauri-action@v0
@@ -175,6 +185,8 @@ jobs:
           # key. Publishing therefore fails unless the production key is
           # configured here.
           VEXIL_PUBLIC_KEY: ${{ secrets.VEXIL_PUBLIC_KEY }}
+          # Signs the updater bundles (.sig files + latest.json manifest).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         with:
           # __VERSION__ is substituted by tauri-action with the app version from
           # tauri.conf.json (e.g. 0.1.0 -> tag "0.1.0"). Each version re-runs
@@ -185,6 +197,10 @@ jobs:
           releaseBody: "See the assets to download this version and install."
           releaseDraft: false
           prerelease: false
+          # latest.json must offer the NSIS installer (Tauri v2's default
+          # Windows bundler) so in-place updates match how the app was
+          # installed instead of swapping an MSI over an NSIS install.
+          updaterJsonPreferNsis: true
           args: ${{ matrix.platform == 'macos-latest' && '--target universal-apple-darwin' || '' }}
       # Private test-build distribution: upload the desktop installers to a
       # private prerelease on the private repo so builds can be installed and
