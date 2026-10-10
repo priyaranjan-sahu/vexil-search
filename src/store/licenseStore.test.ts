@@ -4,6 +4,9 @@ import { FEATURES, hasFeature, useLicenseStore } from "./licenseStore";
 import { useSearchStore } from "./searchStore";
 
 const invokeMock = vi.mocked(invoke);
+const messageMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({ message: messageMock }));
 
 /** Mirrors `get_license_status` + `get_entitlements` from the Rust side. */
 function mockLicense(granted: string[]) {
@@ -30,7 +33,7 @@ beforeEach(() => {
   invokeMock.mockReset();
   useLicenseStore.setState({ status: null, entitlements: [] });
   useSearchStore.setState({ myPicks: [] });
-  window.alert = vi.fn();
+  messageMock.mockReset();
 });
 
 describe("hasFeature", () => {
@@ -82,7 +85,7 @@ describe("My Picks gate", () => {
     expect(invokeMock).toHaveBeenCalledWith("add_my_pick", {
       pick: { id: "extra", path: "/extra", name: "extra" },
     });
-    expect(window.alert).not.toHaveBeenCalled();
+    expect(messageMock).not.toHaveBeenCalled();
     expect(useSearchStore.getState().myPicks).toHaveLength(6);
   });
 });
@@ -91,7 +94,7 @@ describe("background gate", () => {
   it("blocks enabling for a license without the background feature", () => {
     useLicenseStore.setState({ entitlements: [FEATURES.unlimitedPicks] });
     useSearchStore.getState().setRunInBackground(true);
-    expect(window.alert).toHaveBeenCalled();
+    expect(messageMock).toHaveBeenCalled();
     expect(invokeMock).not.toHaveBeenCalledWith(
       "set_run_in_background",
       expect.anything(),
@@ -101,7 +104,7 @@ describe("background gate", () => {
   it("allows enabling when the background feature is granted", () => {
     useLicenseStore.setState({ entitlements: [FEATURES.background] });
     useSearchStore.getState().setRunInBackground(true);
-    expect(window.alert).not.toHaveBeenCalled();
+    expect(messageMock).not.toHaveBeenCalled();
     expect(invokeMock).toHaveBeenCalledWith("set_run_in_background", {
       enable: true,
     });

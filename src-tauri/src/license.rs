@@ -398,6 +398,81 @@ pub fn get_device_id() -> String {
     device_id()
 }
 
+#[derive(Debug, Deserialize)]
+struct ActivateLicenseReply {
+    license: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ActivateLicenseErrorReply {
+    error: Option<String>,
+}
+
+/// Activates a subscription by email against the deployed licensing worker.
+///
+/// The request is made here in Rust rather than from the webview because the
+/// app CSP is `default-src 'self'`, which would silently block the cross-origin
+/// POST the frontend used to make. `server` is the VITE_LICENSE_SERVER value
+/// embedded at build time. Returns the issued license text on success; any
+/// failure (network, HTTP error, unparseable reply) is a human-readable error
+/// string the Settings form shows inline.
+#[tauri::command(async)]
+pub fn activate_with_email(email: String, server: String) -> Result<String, String> {
+    let email = email.trim();
+    if email.is_empty() {
+        return Err("Enter the email you paid with.".to_string());
+    }
+    if !(server.starts_with("http://") || server.starts_with("https://")) {
+        return Err(
+            "This build has no activation server configured. ".to_string()
+                + "Please use an offline activation key instead.",
+        );
+    }
+
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(10)))
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let url = format!("{}/activate", server.trim_end_matches('/'));
+    let request = serde_json::json!({ "email": email, "deviceId": device_id() });
+
+    let mut res = agent
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .header(
+            "User-Agent",
+            format!("vexil-search/{}", env!("CARGO_PKG_VERSION")),
+        )
+        .send(request.to_string())
+        .map_err(|e| format!("Could not reach the activation server: {e}"))?;
+
+    let text = res
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| format!("Could not read the activation reply: {e}"))?;
+
+    if res.status().is_success() {
+        let reply: ActivateLicenseReply = serde_json::from_str(&text).map_err(|_| {
+            format!(
+                "Could not parse the activation reply (HTTP {}).",
+                res.status()
+            )
+        })?;
+        let license = reply.license.unwrap_or_default();
+        if license.trim().is_empty() {
+            return Err("The activation server returned an empty license.".to_string());
+        }
+        return Ok(license);
+    }
+
+    let reply: ActivateLicenseErrorReply = serde_json::from_str(&text)
+        .map_err(|_| format!("Activation failed (HTTP {}).", res.status()))?;
+    Err(reply
+        .error
+        .unwrap_or_else(|| format!("Activation failed (HTTP {}).", res.status())))
+}
+
 /// True when the installed license explicitly grants `feature`.
 ///
 /// Authorization is per-feature, never per-plan: a license that grants only
@@ -440,6 +515,8 @@ pub fn entitlements(app: &AppHandle) -> Vec<String> {
 mod tests {
     use super::*;
     use rand::rngs::OsRng;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
 
     fn sample_payload() -> LicensePayload {
         LicensePayload {
@@ -724,5 +801,88 @@ mod tests {
             assert!(grants(true, &[], f), "legacy license lost {f}");
         }
         assert_eq!(resolved(true, &[]).len(), KNOWN_FEATURES.len());
+    }
+
+    #[test]
+    fn activate_rejects_blank_email_without_network() {
+        let err = activate_with_email("   ".to_string(), "https://lic.vexil.app".to_string())
+            .unwrap_err();
+        assert!(err.contains("Enter the email"), "got: {err}");
+    }
+
+    #[test]
+    fn activate_rejects_missing_server_without_network() {
+        let err = activate_with_email("u@vexil.app".to_string(), "".to_string()).unwrap_err();
+        assert!(err.contains("no activation server"), "got: {err}");
+    }
+
+    /// Serves one canned reply from a local TCP socket so the activation
+    /// request can be exercised end to end without any external dependency.
+    /// Returns the server base URL and a handle whose value is the request
+    /// body the server received. Join the handle after the client call.
+    fn spawn_server(status: u16, body: &'static str) -> (String, std::thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let payload = body.to_string();
+        let served = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            // Read headers up to the blank line without waiting for EOF.
+            loop {
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+                if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let head = String::from_utf8_lossy(&request);
+            let content_length: usize = head
+                .split("\r\n")
+                .find_map(|line| {
+                    line.strip_prefix("Content-Length:")
+                        .or_else(|| line.strip_prefix("content-length:"))
+                })
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0);
+            let mut body_buf = vec![0u8; content_length];
+            stream.read_exact(&mut body_buf).unwrap();
+            request.extend_from_slice(&body_buf);
+
+            let len = payload.len();
+            let resp = format!(
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n"
+            );
+            stream.write_all(resp.as_bytes()).unwrap();
+            stream.write_all(payload.as_bytes()).unwrap();
+            String::from_utf8_lossy(&request).to_string()
+        });
+        (format!("http://{addr}"), served)
+    }
+
+    #[test]
+    fn activate_returns_the_issued_license() {
+        let (base, server) = spawn_server(200, r#"{"license":"SIGNED-LICENSE"}"#);
+        let license = activate_with_email("u@vexil.app".to_string(), base).unwrap();
+        assert_eq!(license, "SIGNED-LICENSE");
+        let echoed = server.join().unwrap();
+        assert!(echoed.contains("u@vexil.app"), "got: {echoed}");
+        assert!(echoed.contains("deviceId"), "got: {echoed}");
+    }
+
+    #[test]
+    fn activate_surfaces_worker_error_message() {
+        let (base, server) = spawn_server(403, r#"{"error":"Email not found"}"#);
+        let err = activate_with_email("nobody@vexil.app".to_string(), base).unwrap_err();
+        assert!(err.contains("Email not found"), "got: {err}");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn activate_surfaces_non_json_http_error() {
+        let (base, server) = spawn_server(500, "boom");
+        let err = activate_with_email("u@vexil.app".to_string(), base).unwrap_err();
+        assert!(err.contains("500"), "got: {err}");
+        server.join().unwrap();
     }
 }

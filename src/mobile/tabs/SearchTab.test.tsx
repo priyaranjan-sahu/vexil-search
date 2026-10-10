@@ -119,4 +119,54 @@ describe("SearchTab", () => {
     expect(screen.queryByText("report.pdf")).not.toBeInTheDocument();
     expect(screen.getByText(/No files indexed yet/)).toBeInTheDocument();
   });
+
+  it("applies size/date filters to the browse count", () => {
+    useSearchStore.setState({
+      query: "",
+      activeSizeFilter: "Medium (1-100MB)",
+      browseSections: [
+        {
+          category: "Music",
+          count: 3,
+          files: [
+            {
+              id: 1,
+              title: "small.mp3",
+              snippet: "",
+              path: "/music/small.mp3",
+              relevance: 0,
+              size: 1024,
+              modified: 0,
+              category: "Music",
+            },
+            {
+              id: 2,
+              title: "medium.mp3",
+              snippet: "",
+              path: "/music/medium.mp3",
+              relevance: 0,
+              size: 50 * 1024 * 1024,
+              modified: 0,
+              category: "Music",
+            },
+            {
+              id: 3,
+              title: "large.mp3",
+              snippet: "",
+              path: "/music/large.mp3",
+              relevance: 0,
+              size: 200 * 1024 * 1024,
+              modified: 0,
+              category: "Music",
+            },
+          ],
+        },
+      ],
+    });
+    render(<SearchTab onLongPress={vi.fn()} />);
+    expect(screen.getByText("1 file")).toBeInTheDocument();
+    expect(screen.getByText("medium.mp3")).toBeInTheDocument();
+    expect(screen.queryByText("small.mp3")).not.toBeInTheDocument();
+    expect(screen.queryByText("large.mp3")).not.toBeInTheDocument();
+  });
 });

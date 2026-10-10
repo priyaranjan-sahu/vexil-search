@@ -74,19 +74,28 @@ export const SearchTab = ({
 
   const browsing = query.trim() === "";
 
+  // Filtered browse sections. With a size/date filter active the count is the
+  // number of files actually listed; otherwise it stays the server-side total
+  // so the "M latest" phrasing in the header still applies.
+  const filtersActive =
+    activeSizeFilter !== "Any Size" || activeDateFilter !== "Any Time";
   const browseView = useMemo(
     () =>
       browseSections
-        .map((section) => ({
-          ...section,
-          files: getFilteredResults(
+        .map((section) => {
+          const files = getFilteredResults(
             section.files,
             activeSizeFilter,
             activeDateFilter,
-          ),
-        }))
+          );
+          return {
+            ...section,
+            files,
+            count: filtersActive ? files.length : section.count,
+          };
+        })
         .filter((section) => section.count > 0),
-    [browseSections, activeSizeFilter, activeDateFilter],
+    [browseSections, activeSizeFilter, activeDateFilter, filtersActive],
   );
 
   const browseFileCount = useMemo(

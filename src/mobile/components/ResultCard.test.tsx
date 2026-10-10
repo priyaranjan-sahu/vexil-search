@@ -102,4 +102,32 @@ describe("ResultCard", () => {
     );
     expect(screen.getByLabelText("Pinned")).toBeInTheDocument();
   });
+
+  it("shows the year on dates from a previous year", () => {
+    const old = { ...result, modified: 1546300800 }; // 2019-01-01
+    render(
+      <ResultCard
+        result={old}
+        isPinned={false}
+        onOpen={vi.fn()}
+        onLongPress={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/2019/)).toBeInTheDocument();
+  });
+
+  it("omits the year for dates in the current year", () => {
+    const now = Math.floor(Date.now() / 1000);
+    const recent = { ...result, modified: now };
+    render(
+      <ResultCard
+        result={recent}
+        isPinned={false}
+        onOpen={vi.fn()}
+        onLongPress={vi.fn()}
+      />,
+    );
+    const meta = screen.getByText(/Documents/).textContent ?? "";
+    expect(meta).not.toMatch(/\b20\d\d\b/);
+  });
 });

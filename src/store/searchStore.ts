@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { invoke } from "@tauri-apps/api/core";
+import { message } from "@tauri-apps/plugin-dialog";
 import { openFileExternally } from "../lib/openExternal";
 import { confirmDelete } from "../lib/confirmDelete";
 import { FEATURES, hasFeature } from "./licenseStore";
@@ -170,7 +171,7 @@ export const useSearchStore = create<SearchState>()(
           await invoke("add_my_pick", { pick });
           set({ myPicks: await invoke<SearchResult[]>("list_my_picks") });
         } catch (error) {
-          alert(String(error));
+          void message(String(error));
         }
       },
       removeMyPick: async (id) => {
@@ -206,7 +207,7 @@ export const useSearchStore = create<SearchState>()(
       setShowTrash: (showTrash) => set({ showTrash }),
       setRunInBackground: (runInBackground) => {
         if (runInBackground && !hasFeature(FEATURES.background)) {
-          alert("Running in background is a Pro feature.");
+          void message("Running in background is a Pro feature.");
           return;
         }
         set({ runInBackground });
@@ -219,7 +220,7 @@ export const useSearchStore = create<SearchState>()(
         const error = await openFileExternally(path);
         if (error) {
           console.error("open failed", error);
-          alert(error);
+          await message(error);
         }
         if (typeof item !== "string") {
           set((state) => ({
@@ -236,7 +237,7 @@ export const useSearchStore = create<SearchState>()(
           await invoke("open_in_explorer", { path });
         } catch (error) {
           console.error("Failed to reveal in explorer:", error);
-          alert(`Could not reveal: ${path}`);
+          void message(`Could not reveal: ${path}`);
         }
       },
       runSearch: async (query, immediate = false) => {
@@ -299,7 +300,7 @@ export const useSearchStore = create<SearchState>()(
       handleDelete: async () => {
         const selected = get().selectedResult;
         if (!selected) return;
-        if (!confirmDelete(selected.title, selected.path)) return;
+        if (!(await confirmDelete(selected.title, selected.path))) return;
         try {
           await invoke("delete_file", { path: selected.path });
           set((state) => ({

@@ -2,9 +2,11 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { SearchResult } from "./searchStore";
 
 const invoke = vi.hoisted(() => vi.fn());
+const confirmMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: confirmMock }));
 
 const pick = (id: number): SearchResult => ({
   id,
@@ -25,12 +27,13 @@ async function freshStore() {
 
 beforeEach(() => {
   invoke.mockReset();
+  confirmMock.mockReset();
   localStorage.clear();
 });
 
 describe("handleDelete", () => {
   it("does not delete when the confirmation is declined", async () => {
-    window.confirm = () => false;
+    confirmMock.mockResolvedValue(false);
     const useSearchStore = await freshStore();
     useSearchStore.setState({ selectedResult: pick(1) });
 
@@ -41,7 +44,7 @@ describe("handleDelete", () => {
   });
 
   it("deletes once the confirmation is accepted", async () => {
-    window.confirm = () => true;
+    confirmMock.mockResolvedValue(true);
     const useSearchStore = await freshStore();
     const target = pick(2);
     useSearchStore.setState({ selectedResult: target, results: [target] });
@@ -54,7 +57,7 @@ describe("handleDelete", () => {
   });
 
   it("does nothing when there is no selection", async () => {
-    window.confirm = () => true;
+    confirmMock.mockResolvedValue(true);
     const useSearchStore = await freshStore();
 
     await useSearchStore.getState().handleDelete();

@@ -12,7 +12,15 @@ const formatSize = (bytes: number): string => {
 const formatDate = (secs: number): string => {
   if (!secs) return "";
   const d = new Date(secs * 1000);
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const opts: Intl.DateTimeFormatOptions = {
+    month: "short",
+    day: "numeric",
+  };
+  // A recent file from a previous year needs its year or the date is ambiguous.
+  if (d.getFullYear() !== new Date().getFullYear()) {
+    opts.year = "numeric";
+  }
+  return d.toLocaleDateString(undefined, opts);
 };
 
 const LONG_PRESS_MS = 500;

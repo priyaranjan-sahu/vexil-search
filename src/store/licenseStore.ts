@@ -81,20 +81,14 @@ export const useLicenseStore = create<LicenseState>()((set, get) => ({
       );
     }
     try {
-      const deviceId = await invoke<string>("get_device_id");
-      const response = await fetch(`${LICENSE_SERVER}/activate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: email.trim(), deviceId }),
+      // The POST happens in Rust (`activate_with_email`): the webview CSP is
+      // `default-src 'self'`, which would silently block this cross-origin
+      // request if it were issued from the browser.
+      const license = await invoke<string>("activate_with_email", {
+        email: email.trim(),
+        server: LICENSE_SERVER,
       });
-      if (!response.ok) {
-        const body = (await response.json().catch(() => null)) as {
-          error?: string;
-        } | null;
-        return body?.error ?? `Activation failed (HTTP ${response.status})`;
-      }
-      const data = (await response.json()) as { license: string };
-      return await get().install(data.license);
+      return await get().install(license);
     } catch (error) {
       return String(error);
     }

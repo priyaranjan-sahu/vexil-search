@@ -848,7 +848,6 @@ fn order_browse_categories(existing: Vec<String>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::open_target_path;
     use super::order_browse_categories;
     use super::path_is_indexed;
     use crate::db;
@@ -1446,6 +1445,7 @@ pub fn run() {
             license::get_entitlements,
             license::install_license,
             license::get_device_id,
+            license::activate_with_email,
             updates::check_for_updates,
             updates::install_update,
             list_my_picks,

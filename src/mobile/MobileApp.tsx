@@ -7,6 +7,7 @@ import { getPlatform } from "../lib/platform";
 import type { Platform } from "../lib/platform";
 import { confirmDelete } from "../lib/confirmDelete";
 import { useUpdateInfo, openReleasePage } from "../lib/updates";
+import { useThemeSync } from "../lib/useTheme";
 import { UpdateBanner } from "../components/UpdateBanner";
 import {
   ANDROID_EVENTS,
@@ -35,6 +36,8 @@ const TABS: Array<{ key: TabKey; label: string }> = [
 ];
 
 export const MobileApp = () => {
+  // Theme must reach the DOM on mobile too (desktop previously owned this).
+  useThemeSync();
   const [platform, setPlatform] = useState<Platform>("desktop");
   const [allFilesAccess, setAllFilesAccess] = useState(true);
   const [mobileRoots, setMobileRoots] = useState<MobileRoot[]>([]);
@@ -218,8 +221,14 @@ export const MobileApp = () => {
         {
           label: "Copy Path",
           onSelect: () => {
-            void navigator.clipboard?.writeText(result.path);
-            setToast("Path copied");
+            if (!navigator.clipboard) {
+              setToast("Clipboard unavailable");
+              return;
+            }
+            void navigator.clipboard.writeText(result.path).then(
+              () => setToast("Path copied"),
+              () => setToast("Could not copy path"),
+            );
           },
         },
         {
@@ -236,8 +245,8 @@ export const MobileApp = () => {
           label: "Delete",
           danger: true,
           onSelect: () => {
-            if (!confirmDelete(result.title, result.path)) return;
             void (async () => {
+              if (!(await confirmDelete(result.title, result.path))) return;
               try {
                 await invoke("delete_file", { path: result.path });
                 const s = useSearchStore.getState();

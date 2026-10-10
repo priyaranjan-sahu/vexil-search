@@ -2,8 +2,10 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getVersion } from "@tauri-apps/api/app";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { message } from "@tauri-apps/plugin-dialog";
 import "./App.css";
 
 import { DirectoryTree } from "./components/DirectoryTree";
@@ -14,6 +16,26 @@ import { useUpdateInfo, applyUpdate } from "./lib/updates";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { useSearchStore, SearchResult, Theme } from "./store/searchStore";
 import { useLicenseStore } from "./store/licenseStore";
+import { useThemeSync } from "./lib/useTheme";
+import { getFilteredResults as filterResults } from "./lib/resultFilters";
+
+// True when the keydown target is a text field, in which case native
+// Cmd/Ctrl+C (copy selected text) should be left untouched.
+function isEditingTextTarget(target: unknown): boolean {
+  const el = target as HTMLElement | null;
+  return Boolean(
+    el &&
+    (el.tagName === "INPUT" ||
+      el.tagName === "TEXTAREA" ||
+      el.isContentEditable),
+  );
+}
+
+const isMac =
+  typeof navigator !== "undefined" &&
+  /Mac|iPhone|iPad/.test(navigator.platform + navigator.userAgent);
+const copyKeyHint = isMac ? "Cmd+C" : "Ctrl+C";
+const pasteKeyHint = isMac ? "Cmd+V" : "Ctrl+V";
 
 function App() {
   const {
@@ -153,15 +175,17 @@ function App() {
   const currentShortcutRef = useRef(shortcut);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const radarToastTimerRef = useRef<number>(0);
+  const [appVersion, setAppVersion] = useState("");
 
+  useThemeSync();
+
+  // Resolve the version at runtime so the About dialog can't drift from the
+  // shipped build.
   useEffect(() => {
-    // Theme Engine
-    const root = document.documentElement;
-    root.classList.remove("light", "dark");
-    if (theme !== "system") {
-      root.classList.add(theme);
-    }
-  }, [theme]);
+    getVersion()
+      .then(setAppVersion)
+      .catch(() => setAppVersion(""));
+  }, []);
 
   // Sync background running state to backend on mount
   useEffect(() => {
@@ -178,7 +202,7 @@ function App() {
       const { customDirs, excludedDirs } = useSearchStore.getState();
       await invoke("start_indexing", { customDirs, excludedDirs });
     } catch (error) {
-      alert(error);
+      void message(String(error));
       setIndexingProgress(null);
     }
   }, [setIndexingProgress]);
@@ -303,7 +327,8 @@ function App() {
     runSearch(searchQuery);
   }, [searchQuery, activeCategory, runSearch]);
 
-  // Escape clears the query / closes settings/about
+  // Escape closes settings/about/Trash, then clears the query; Cmd/Ctrl+N
+  // clears and refocuses search; Cmd/Ctrl+C copies the selected row's path.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -311,18 +336,36 @@ function App() {
           setShowSettings(false);
         } else if (showAbout) {
           setShowAbout(false);
+        } else if (showTrash) {
+          setShowTrash(false);
         } else {
           setSearchQuery("");
         }
-      } else if (e.ctrlKey && (e.key === "n" || e.key === "N")) {
+      } else if ((e.metaKey || e.ctrlKey) && (e.key === "n" || e.key === "N")) {
         e.preventDefault();
         setSearchQuery("");
         document.querySelector<HTMLInputElement>(".search-input")?.focus();
+      } else if (
+        (e.metaKey || e.ctrlKey) &&
+        (e.key === "c" || e.key === "C") &&
+        !isEditingTextTarget(e.target)
+      ) {
+        e.preventDefault();
+        handleCopyPath();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [showSettings, showAbout, setShowSettings, setShowAbout, setSearchQuery]);
+  }, [
+    showSettings,
+    showAbout,
+    showTrash,
+    setShowSettings,
+    setShowAbout,
+    setShowTrash,
+    setSearchQuery,
+    handleCopyPath,
+  ]);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -393,13 +436,37 @@ function App() {
   );
 
   const browsing = searchQuery.trim() === "";
+  // Browse sections honor the size/date filters just like search results do.
+  // When a filter is active a section's count is the number of matching files
+  // actually listed; otherwise it stays the server-side total so the
+  // "showing the N latest" phrasing in the header still applies.
+  const filtersActive =
+    activeSizeFilter !== "Any Size" || activeDateFilter !== "Any Time";
+  const filteredBrowseSections = useMemo(
+    () =>
+      browseSections
+        .map((section) => {
+          const files = filterResults(
+            section.files,
+            activeSizeFilter,
+            activeDateFilter,
+          );
+          return {
+            ...section,
+            files,
+            count: filtersActive ? files.length : section.count,
+          };
+        })
+        .filter((section) => section.count > 0),
+    [browseSections, activeSizeFilter, activeDateFilter, filtersActive],
+  );
   const browseFileCount = useMemo(
     () =>
-      browseSections.reduce(
+      filteredBrowseSections.reduce(
         (total, section) => total + section.files.length,
         0,
       ),
-    [browseSections],
+    [filteredBrowseSections],
   );
 
   return (
@@ -469,7 +536,7 @@ function App() {
                   setActiveMenu(null);
                 }}
               >
-                Copy <span style={{ opacity: 0.5 }}>Ctrl+C</span>
+                Copy <span style={{ opacity: 0.5 }}>{copyKeyHint}</span>
               </div>
               <div
                 className="menu-dropdown-item"
@@ -482,7 +549,7 @@ function App() {
                   setActiveMenu(null);
                 }}
               >
-                Paste <span style={{ opacity: 0.5 }}>Ctrl+V</span>
+                Paste <span style={{ opacity: 0.5 }}>{pasteKeyHint}</span>
               </div>
               <div className="menu-dropdown-divider"></div>
               <div
@@ -908,7 +975,7 @@ function App() {
         {/* Results Panel (Left Side Now) */}
         <ResultsTable
           filteredResults={filteredResults}
-          browseSections={browseSections}
+          browseSections={filteredBrowseSections}
           isBrowsing={browsing}
           selectedResult={selectedResult}
           setSelectedResult={setSelectedResult}
@@ -1200,7 +1267,9 @@ function App() {
                     margin: 0,
                   }}
                 >
-                  Minimize to system tray on close
+                  {isMac
+                    ? "Minimize to the menu bar on close"
+                    : "Minimize to system tray on close"}
                 </label>
               </div>
             </div>
@@ -1342,7 +1411,7 @@ function App() {
                 marginBottom: "24px",
               }}
             >
-              Version 0.1.0
+              {appVersion ? `Version ${appVersion}` : ""}
               <br />
               <br />A lightning-fast, local-first search engine designed for
               privacy and speed.
@@ -1433,9 +1502,18 @@ function App() {
           <div
             className="menu-dropdown-item"
             onClick={() => {
-              if (navigator.clipboard) {
-                navigator.clipboard.writeText(contextMenu.result.path);
-              }
+              const path = contextMenu.result.path;
+              void (async () => {
+                if (!navigator.clipboard) {
+                  void message("Clipboard unavailable");
+                  return;
+                }
+                try {
+                  await navigator.clipboard.writeText(path);
+                } catch {
+                  void message("Could not copy path");
+                }
+              })();
               setContextMenu(null);
             }}
           >

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { message } from "@tauri-apps/plugin-dialog";
 import { DirEntry } from "../store/searchStore";
 
 interface TreeNodeProps {
@@ -52,7 +53,7 @@ export const TreeNode = ({
 
   const toggleCheck = () => {
     if (isProOnly && !userIsPro) {
-      alert("Searching this drive is a Pro feature.");
+      void message("Searching this drive is a Pro feature.");
       return;
     }
 

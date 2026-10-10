@@ -1,3 +1,5 @@
+import { confirm } from "@tauri-apps/plugin-dialog";
+
 /**
  * Single confirmation gate for the destructive delete action.
  *
@@ -8,15 +10,20 @@
  * before the row disappears, and the copy says the file is recoverable rather
  * than gone: `delete_file` moves the file into Vexil's own trash, which is
  * restorable for 30 days.
+ *
+ * Uses the native dialog plugin rather than `window.confirm`, which is not
+ * implemented on the mobile webviews (WKWebView / Android WebView always
+ * answer false), so the destructive delete could previously never be
+ * confirmed on mobile.
  */
 export const TRASH_RETENTION_DAYS = 30;
 
 export const confirmDelete = (
   title: string | undefined,
   path: string,
-): boolean => {
+): Promise<boolean> => {
   const name = title || path.split(/[\\/]/).pop() || "this file";
-  return window.confirm(
+  return confirm(
     `Move "${name}" to Trash?\n\nYou can restore it from Trash for ${TRASH_RETENTION_DAYS} days.`,
   );
 };

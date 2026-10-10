@@ -10,6 +10,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { TrashPanel } from "./TrashPanel";
 
 const mockInvoke = vi.mocked(invoke);
+const confirmMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: confirmMock }));
 
 const flush = () =>
   act(async () => {
@@ -39,6 +42,7 @@ const items = [
 
 beforeEach(() => {
   mockInvoke.mockReset();
+  confirmMock.mockReset();
   mockInvoke.mockImplementation((cmd: string) => {
     switch (cmd) {
       case "trash_items":
@@ -114,7 +118,7 @@ describe("TrashPanel", () => {
   });
 
   it("asks before emptying, and does nothing if declined", async () => {
-    window.confirm = () => false;
+    confirmMock.mockResolvedValue(false);
     const onChanged = vi.fn();
     render(<TrashPanel onClose={() => {}} onChanged={onChanged} />);
     await waitFor(() =>
@@ -133,10 +137,10 @@ describe("TrashPanel", () => {
 
   it("warns that emptying cannot be undone, then clears the trash", async () => {
     const confirmMessages: string[] = [];
-    window.confirm = (message?: string) => {
-      confirmMessages.push(message ?? "");
-      return true;
-    };
+    confirmMock.mockImplementation((m: string) => {
+      confirmMessages.push(m);
+      return Promise.resolve(true);
+    });
     const onChanged = vi.fn();
     render(<TrashPanel onClose={() => {}} onChanged={onChanged} />);
     await waitFor(() =>

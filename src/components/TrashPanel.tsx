@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import { TRASH_RETENTION_DAYS } from "../lib/confirmDelete";
 
 export interface TrashItem {
@@ -113,9 +114,9 @@ export function TrashPanel({ onClose, onChanged }: Props) {
 
   const empty = useCallback(async () => {
     if (
-      !window.confirm(
+      !(await confirm(
         `Permanently delete all ${items.length} file${items.length === 1 ? "" : "s"} in Trash?\n\nThis cannot be undone.`,
-      )
+      ))
     ) {
       return;
     }

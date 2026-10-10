@@ -7,6 +7,26 @@ import { MobileApp } from "./MobileApp";
 
 const mockInvoke = vi.mocked(invoke);
 
+const baseImpl = (cmd: string) => {
+  switch (cmd) {
+    case "get_platform":
+      return Promise.resolve("android");
+    case "search_files":
+      return Promise.resolve([]);
+    case "start_indexing":
+      return Promise.resolve("started");
+    case "get_index_stats":
+      return Promise.resolve(0);
+    case "get_mobile_roots":
+      return Promise.resolve([]);
+    case "add_mobile_root":
+    case "remove_mobile_root":
+      return Promise.resolve([]);
+    default:
+      return Promise.resolve(undefined);
+  }
+};
+
 // Drains the microtask queue so async boot/indexing invokes settle inside act.
 const flush = () =>
   act(async () => {
@@ -28,29 +48,13 @@ beforeEach(() => {
     indexingProgress: null,
     dbTotalCount: 0,
   });
-  mockInvoke.mockImplementation((cmd: string) => {
-    switch (cmd) {
-      case "get_platform":
-        return Promise.resolve("android");
-      case "search_files":
-        return Promise.resolve([]);
-      case "start_indexing":
-        return Promise.resolve("started");
-      case "get_index_stats":
-        return Promise.resolve(0);
-      case "get_mobile_roots":
-        return Promise.resolve([]);
-      case "add_mobile_root":
-      case "remove_mobile_root":
-        return Promise.resolve([]);
-      default:
-        return Promise.resolve(undefined);
-    }
-  });
+  mockInvoke.mockImplementation(baseImpl);
 });
 
 afterEach(() => {
   delete (window as unknown as { VexilAndroid?: unknown }).VexilAndroid;
+  delete (navigator as { clipboard?: unknown }).clipboard;
+  vi.useRealTimers();
 });
 
 describe("MobileApp shell", () => {
@@ -102,5 +106,83 @@ describe("MobileApp shell", () => {
     expect(
       await screen.findByRole("button", { name: "Add Folder" }),
     ).toBeInTheDocument();
+  });
+
+  it("shows 'Path copied' only when the clipboard write succeeds", async () => {
+    vi.useFakeTimers();
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "search_files")
+        return Promise.resolve([
+          {
+            id: 1,
+            title: "report.pdf",
+            snippet: "matched",
+            path: "/docs/report.pdf",
+            relevance: 88,
+            size: 2048,
+            modified: 1700000000,
+            category: "Documents",
+          },
+        ]);
+      return baseImpl(cmd);
+    });
+    useSearchStore.setState({ query: "report", results: [] });
+    render(<MobileApp />);
+    // Let the 250ms live-search debounce run, then drain its promise.
+    await act(async () => {
+      vi.advanceTimersByTime(300);
+      await Promise.resolve();
+    });
+    fireEvent.contextMenu(screen.getByText("report.pdf"));
+    fireEvent.click(screen.getByText("Copy Path"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(writeText).toHaveBeenCalledWith("/docs/report.pdf");
+    expect(screen.getByText("Path copied")).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it("shows an error toast when the clipboard write fails", async () => {
+    vi.useFakeTimers();
+    const writeText = vi.fn(() => Promise.reject(new Error("denied")));
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "search_files")
+        return Promise.resolve([
+          {
+            id: 1,
+            title: "report.pdf",
+            snippet: "matched",
+            path: "/docs/report.pdf",
+            relevance: 88,
+            size: 2048,
+            modified: 1700000000,
+            category: "Documents",
+          },
+        ]);
+      return baseImpl(cmd);
+    });
+    useSearchStore.setState({ query: "report", results: [] });
+    render(<MobileApp />);
+    await act(async () => {
+      vi.advanceTimersByTime(300);
+      await Promise.resolve();
+    });
+    fireEvent.contextMenu(screen.getByText("report.pdf"));
+    fireEvent.click(screen.getByText("Copy Path"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByText("Could not copy path")).toBeInTheDocument();
+    vi.useRealTimers();
   });
 });

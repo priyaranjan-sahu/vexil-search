@@ -76,13 +76,16 @@ export const SettingsTab = ({
 
   const addRoot = () => {
     if (platform === "android") {
+      // The Android bridge toasts nothing itself; the folderPicked event
+      // handler in MobileApp reports success ("Added folder: …") and the
+      // folderPickError event reports failures, so do not toast here before
+      // the picker has even returned.
       pickFolder();
-      onToast("Choose a folder to index");
     } else if (platform === "ios") {
+      // Toast only when the importer finishes; it reports the actual outcome.
       void invoke("import_mobile_files")
         .then((msg) => onToast(String(msg)))
         .catch((err) => onToast(String(err)));
-      onToast("Pick files to import");
     }
   };
 

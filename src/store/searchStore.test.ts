@@ -2,9 +2,11 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { SearchResult } from "./searchStore";
 
 const invoke = vi.hoisted(() => vi.fn());
+const messageMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ message: messageMock }));
 
 const pick = (id: number): SearchResult => ({
   id,
@@ -65,18 +67,16 @@ describe("My Picks backend ownership", () => {
   });
 
   it("surfaces the backend rejection when the free-tier cap is hit", async () => {
-    const alertSpy = vi.fn();
-    vi.stubGlobal("alert", alertSpy);
+    messageMock.mockResolvedValue(undefined);
     invoke.mockRejectedValue("Free tier is limited to 5 My Picks.");
     const useSearchStore = await freshStore();
 
     await useSearchStore.getState().addMyPick(pick(9));
 
-    expect(alertSpy).toHaveBeenCalledWith(
+    expect(messageMock).toHaveBeenCalledWith(
       "Free tier is limited to 5 My Picks.",
     );
     expect(useSearchStore.getState().myPicks).toEqual([]);
-    vi.unstubAllGlobals();
   });
 
   it("rolls back the optimistic removal when the backend rejects it", async () => {
