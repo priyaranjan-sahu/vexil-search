@@ -9,6 +9,8 @@ export interface LicenseStatus {
   issuedAt: number | null;
   expiresAt: number | null;
   reason: string;
+  /** True for server-issued tokens that must be re-checked for revocation. */
+  renewable: boolean;
 }
 
 /**
@@ -47,6 +49,8 @@ interface LicenseState {
   refresh: () => Promise<void>;
   install: (license: string) => Promise<string | null>;
   activateWithEmail: (email: string) => Promise<string | null>;
+  /** Drop a server-issued license the server reports as no longer active. */
+  enforceRevocation: () => Promise<void>;
 }
 
 export const useLicenseStore = create<LicenseState>()((set, get) => ({
@@ -91,6 +95,35 @@ export const useLicenseStore = create<LicenseState>()((set, get) => ({
       return await get().install(license);
     } catch (error) {
       return String(error);
+    }
+  },
+  /**
+   * Re-checks a server-issued license on startup and drops it if the server
+   * reports the seat is gone (refund, cancellation, or deactivation). Only
+   * `renewable` tokens are checked, so offline keys and legacy tokens are
+   * never touched. Never drops a license on a failed check: an offline user
+   * must not lose access because the network was down.
+   */
+  enforceRevocation: async () => {
+    const { status, refresh } = get();
+    if (
+      !status?.pro ||
+      !status.renewable ||
+      !status.userId ||
+      !LICENSE_SERVER
+    ) {
+      return;
+    }
+    try {
+      const active = await invoke<boolean>("verify_activation", {
+        email: status.userId,
+        server: LICENSE_SERVER,
+      });
+      if (active) return;
+      await invoke("remove_license");
+      await refresh();
+    } catch (error) {
+      console.error("Failed to verify license activation:", error);
     }
   },
 }));

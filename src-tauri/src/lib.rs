@@ -1208,6 +1208,26 @@ fn exit_app(app_handle: AppHandle) {
     app_handle.exit(0);
 }
 
+/// Aborts startup with a visible, actionable message instead of a panic.
+///
+/// A bare `expect` unwinds and, in the packaged Windows build, is surfaced as a
+/// silent no-op: the window never opens and the user gets no explanation. Show
+/// a native error dialog on desktop (blocking_show is desktop-only), log on
+/// every platform, then exit with a non-zero code.
+fn fatal_startup(app: &AppHandle, message: &str) -> ! {
+    log::error!("Fatal startup error: {message}");
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+        app.dialog()
+            .message(message)
+            .kind(MessageDialogKind::Error)
+            .title("Vexil could not start")
+            .blocking_show();
+    }
+    std::process::exit(1);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // `mut` is only needed when the e2e feature re-assigns builder below
@@ -1264,11 +1284,19 @@ pub fn run() {
                     .build(app)?;
             }
 
-            let app_dir = app
-                .path()
-                .app_data_dir()
-                .unwrap_or_else(|_| PathBuf::from("."));
-            setup_db(&app_dir).expect("Failed to initialize database");
+            let app_dir = match app.path().app_data_dir() {
+                Ok(dir) => dir,
+                Err(e) => fatal_startup(
+                    app.handle(),
+                    &format!("Could not resolve the app data folder: {e}"),
+                ),
+            };
+            if let Err(e) = setup_db(&app_dir) {
+                fatal_startup(
+                    app.handle(),
+                    &format!("Failed to initialize the database: {e}"),
+                );
+            }
 
             // Create connection pool (4 connections for concurrent reads)
             let manager = r2d2_sqlite::SqliteConnectionManager::file(db_path(&app_dir))
@@ -1296,7 +1324,13 @@ pub fn run() {
                     )?;
                     Ok(())
                 });
-            let pool = r2d2::Pool::builder().max_size(4).build(manager).expect("Failed to create DB pool");
+            let pool = match r2d2::Pool::builder().max_size(4).build(manager) {
+                Ok(pool) => pool,
+                Err(e) => fatal_startup(
+                    app.handle(),
+                    &format!("Failed to open the database: {e}"),
+                ),
+            };
             app.manage(pool);
 
             // Clear out trash that has outlived the retention window, so a device
@@ -1471,6 +1505,8 @@ pub fn run() {
             license::install_license,
             license::get_device_id,
             license::activate_with_email,
+            license::verify_activation,
+            license::remove_license,
             updates::check_for_updates,
             updates::install_update,
             list_my_picks,
@@ -1486,5 +1522,8 @@ pub fn run() {
             }
         })
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .unwrap_or_else(|e| {
+            log::error!("error while running tauri application: {e}");
+            std::process::exit(1);
+        });
 }

@@ -46,6 +46,11 @@ pub struct LicensePayload {
     pub expires_at: Option<u64>,
     #[serde(default)]
     pub device_id: Option<String>,
+    /// True for server-issued tokens the client re-checks against `/verify` on
+    /// startup, so a token with no expiry can still be revoked after a refund.
+    /// Offline keys omit this and default to false (never revocation-checked).
+    #[serde(default)]
+    pub renewable: bool,
 }
 
 fn default_version() -> u32 {
@@ -62,6 +67,9 @@ pub struct LicenseStatus {
     pub issued_at: Option<u64>,
     pub expires_at: Option<u64>,
     pub reason: String,
+    /// True when this token should be re-checked against the server on startup
+    /// (server-issued tokens). Offline keys and invalid licenses are false.
+    pub renewable: bool,
 }
 
 /// Seconds since the Unix epoch. Exposed so other modules stamp rows with the
@@ -354,6 +362,7 @@ pub fn status(app: &AppHandle) -> LicenseStatus {
                 issued_at: None,
                 expires_at: None,
                 reason: "No license installed".to_string(),
+                renewable: false,
             }
         }
     };
@@ -368,6 +377,7 @@ pub fn status(app: &AppHandle) -> LicenseStatus {
                 issued_at: None,
                 expires_at: None,
                 reason: e,
+                renewable: false,
             }
         }
     };
@@ -383,6 +393,7 @@ pub fn status(app: &AppHandle) -> LicenseStatus {
                     issued_at: None,
                     expires_at: None,
                     reason: "System clock appears to have moved backwards".to_string(),
+                    renewable: false,
                 };
             }
             write_watermark(app, now);
@@ -394,6 +405,7 @@ pub fn status(app: &AppHandle) -> LicenseStatus {
                 issued_at: Some(payload.issued_at),
                 expires_at: payload.expires_at,
                 reason: "Licensed".to_string(),
+                renewable: payload.renewable,
             }
         }
         Err(e) => LicenseStatus {
@@ -404,6 +416,7 @@ pub fn status(app: &AppHandle) -> LicenseStatus {
             issued_at: None,
             expires_at: None,
             reason: e,
+            renewable: false,
         },
     }
 }
@@ -508,6 +521,77 @@ pub fn activate_with_email(email: String, server: String) -> Result<String, Stri
         .unwrap_or_else(|| format!("Activation failed (HTTP {}).", res.status())))
 }
 
+#[derive(Debug, Deserialize)]
+struct VerifyReply {
+    #[serde(default)]
+    active: bool,
+}
+
+/// Confirms a server-issued license is still active for this device.
+///
+/// Returns `Ok(true)` when active and `Ok(false)` when the server definitively
+/// says the seat is gone (refunded, canceled, or the device was deactivated).
+/// Any transport or HTTP failure is an `Err` so the caller can distinguish
+/// "revoked" from "could not check" and never drop a license while offline.
+#[tauri::command(async)]
+pub fn verify_activation(email: String, server: String) -> Result<bool, String> {
+    let email = email.trim();
+    if email.is_empty() {
+        return Err("No email to verify.".to_string());
+    }
+    if !(server.starts_with("http://") || server.starts_with("https://")) {
+        return Err("No activation server configured.".to_string());
+    }
+
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(10)))
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let url = format!("{}/verify", server.trim_end_matches('/'));
+    let request = serde_json::json!({ "email": email, "deviceId": device_id() });
+
+    let mut res = agent
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .header(
+            "User-Agent",
+            format!("vexil-search/{}", env!("CARGO_PKG_VERSION")),
+        )
+        .send(request.to_string())
+        .map_err(|e| format!("Could not reach the activation server: {e}"))?;
+
+    let text = res
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| format!("Could not read the verification reply: {e}"))?;
+
+    if !res.status().is_success() {
+        return Err(format!("Verification failed (HTTP {}).", res.status()));
+    }
+    let reply: VerifyReply = serde_json::from_str(&text).map_err(|_| {
+        format!(
+            "Could not parse the verification reply (HTTP {}).",
+            res.status()
+        )
+    })?;
+    Ok(reply.active)
+}
+
+/// Removes the installed license and returns the resulting (free) status.
+///
+/// Used when the server reports a license is no longer active. Removing a
+/// missing file is not an error so this is safe to call defensively.
+#[tauri::command]
+pub fn remove_license(app: AppHandle) -> Result<LicenseStatus, String> {
+    let path = license_path(&app);
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(status(&app)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(status(&app)),
+        Err(e) => Err(format!("Failed to remove license: {e}")),
+    }
+}
+
 /// True when the installed license explicitly grants `feature`.
 ///
 /// Authorization is per-feature, never per-plan: a license that grants only
@@ -562,6 +646,7 @@ mod tests {
             issued_at: now_secs() - 60,
             expires_at: None,
             device_id: None,
+            renewable: false,
         }
     }
 
@@ -933,5 +1018,72 @@ mod tests {
         let err = activate_with_email("u@vexil.app".to_string(), base).unwrap_err();
         assert!(err.contains("500"), "got: {err}");
         server.join().unwrap();
+    }
+
+    #[test]
+    fn verify_rejects_blank_email_without_network() {
+        let err =
+            verify_activation("   ".to_string(), "https://lic.vexil.app".to_string()).unwrap_err();
+        assert!(err.contains("No email"), "got: {err}");
+    }
+
+    #[test]
+    fn verify_rejects_missing_server_without_network() {
+        let err = verify_activation("u@vexil.app".to_string(), "".to_string()).unwrap_err();
+        assert!(err.contains("No activation server"), "got: {err}");
+    }
+
+    #[test]
+    fn verify_reports_active_license() {
+        let (base, server) = spawn_server(200, r#"{"active":true}"#);
+        let active = verify_activation("u@vexil.app".to_string(), base).unwrap();
+        assert!(active);
+        let echoed = server.join().unwrap();
+        assert!(echoed.contains("u@vexil.app"), "got: {echoed}");
+        assert!(echoed.contains("deviceId"), "got: {echoed}");
+    }
+
+    #[test]
+    fn verify_reports_revoked_license() {
+        let (base, server) = spawn_server(200, r#"{"active":false}"#);
+        let active = verify_activation("u@vexil.app".to_string(), base).unwrap();
+        assert!(!active);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn verify_surfaces_http_error() {
+        let (base, server) = spawn_server(500, "boom");
+        let err = verify_activation("u@vexil.app".to_string(), base).unwrap_err();
+        assert!(err.contains("500"), "got: {err}");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn renewable_defaults_to_false_for_legacy_tokens() {
+        // A token issued before the field existed must still parse, defaulting
+        // to false so it is never sent for a revocation check.
+        let json = r#"{
+            "version": 2,
+            "userId": "u@vexil.app",
+            "plan": "pro",
+            "features": ["background"],
+            "issuedAt": 1,
+            "expiresAt": null
+        }"#;
+        let parsed: LicensePayload = serde_json::from_str(json).unwrap();
+        assert!(!parsed.renewable);
+    }
+
+    #[test]
+    fn renewable_round_trips_when_present() {
+        let payload = LicensePayload {
+            renewable: true,
+            ..sample_payload()
+        };
+        let json = serde_json::to_string(&payload).unwrap();
+        assert!(json.contains("\"renewable\":true"), "got: {json}");
+        let parsed: LicensePayload = serde_json::from_str(&json).unwrap();
+        assert!(parsed.renewable);
     }
 }

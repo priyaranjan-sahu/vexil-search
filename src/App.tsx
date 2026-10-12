@@ -156,7 +156,9 @@ function App() {
   }, [pro, licenseStatus]);
 
   useEffect(() => {
-    refreshLicense();
+    void refreshLicense().then(() =>
+      useLicenseStore.getState().enforceRevocation(),
+    );
   }, [refreshLicense]);
 
   useEffect(() => {

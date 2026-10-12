@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { FEATURES, hasFeature, useLicenseStore } from "./licenseStore";
+import type { LicenseStatus } from "./licenseStore";
 import { useSearchStore } from "./searchStore";
 
 const invokeMock = vi.mocked(invoke);
@@ -20,6 +21,7 @@ function mockLicense(granted: string[]) {
         issuedAt: 0,
         expiresAt: null,
         reason: "Licensed",
+        renewable: true,
       };
     }
     if (cmd === "get_entitlements") {
@@ -108,5 +110,86 @@ describe("background gate", () => {
     expect(invokeMock).toHaveBeenCalledWith("set_run_in_background", {
       enable: true,
     });
+  });
+});
+
+describe("enforceRevocation", () => {
+  const renewableStatus = (overrides: Partial<LicenseStatus> = {}) =>
+    ({
+      pro: true,
+      plan: "pro",
+      features: [FEATURES.background],
+      userId: "u1",
+      issuedAt: 0,
+      expiresAt: null,
+      reason: "Licensed",
+      renewable: true,
+      ...overrides,
+    }) satisfies LicenseStatus;
+
+  it("removes a server-issued license the server reports as inactive", async () => {
+    useLicenseStore.setState({ status: renewableStatus() });
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "verify_activation") return false;
+      if (cmd === "get_entitlements") return [];
+      if (cmd === "get_license_status") {
+        return renewableStatus({
+          pro: false,
+          plan: "free",
+          features: [],
+          userId: null,
+          reason: "No license installed",
+          renewable: false,
+        });
+      }
+      return null;
+    });
+
+    await useLicenseStore.getState().enforceRevocation();
+
+    expect(invokeMock).toHaveBeenCalledWith("verify_activation", {
+      email: "u1",
+      server: expect.any(String),
+    });
+    expect(invokeMock).toHaveBeenCalledWith("remove_license");
+    expect(useLicenseStore.getState().status?.pro).toBe(false);
+  });
+
+  it("keeps the license when the server confirms it is active", async () => {
+    useLicenseStore.setState({ status: renewableStatus() });
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "verify_activation") return true;
+      return null;
+    });
+
+    await useLicenseStore.getState().enforceRevocation();
+
+    expect(invokeMock).not.toHaveBeenCalledWith("remove_license");
+  });
+
+  it("does not check an offline (non-renewable) license", async () => {
+    useLicenseStore.setState({
+      status: renewableStatus({ renewable: false }),
+    });
+    invokeMock.mockImplementation(async () => null);
+
+    await useLicenseStore.getState().enforceRevocation();
+
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "verify_activation",
+      expect.anything(),
+    );
+  });
+
+  it("keeps the license when the check cannot complete", async () => {
+    useLicenseStore.setState({ status: renewableStatus() });
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "verify_activation") throw new Error("offline");
+      return null;
+    });
+
+    await useLicenseStore.getState().enforceRevocation();
+
+    expect(invokeMock).not.toHaveBeenCalledWith("remove_license");
   });
 });

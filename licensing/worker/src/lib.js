@@ -83,7 +83,22 @@ export async function isRateLimited(kv, key, limit, windowSecs) {
 // Paddle Billing webhook verification.
 // Header `Paddle-Signature: ts=<ts>;h1=<hex>` where the HMAC-SHA256 of the
 // message `<ts>:<rawBody>` (hex-encoded HMAC) equals h1.
-export async function verifyPaddleWebhook(secret, rawBody, signatureHeader) {
+//
+// The timestamp is also checked for freshness. Without that, a captured
+// delivery replays forever (the HMAC of an old body stays valid), which for a
+// licensing webhook means a refund or cancellation can be undone by replaying
+// the earlier "active" event. Paddle's own SDKs default to a 5-minute window.
+export const PADDLE_MAX_SKEW_SECS = 300;
+
+export async function verifyPaddleWebhook(
+  secret,
+  rawBody,
+  signatureHeader,
+  {
+    now = Math.floor(Date.now() / 1000),
+    maxSkewSecs = PADDLE_MAX_SKEW_SECS,
+  } = {},
+) {
   if (!signatureHeader) return false;
   const ts = signatureHeader.match(/ts=(\d+)/)?.[1];
   const h1 = signatureHeader.match(/h1=([0-9a-f]+)/)?.[1];
@@ -104,7 +119,8 @@ export async function verifyPaddleWebhook(secret, rawBody, signatureHeader) {
   const hex = [...new Uint8Array(mac)]
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
-  return constantTimeEqual(hex, h1);
+  if (!constantTimeEqual(hex, h1)) return false;
+  return Math.abs(now - Number(ts)) <= maxSkewSecs;
 }
 
 // Buy Me a Coffee webhook verification.

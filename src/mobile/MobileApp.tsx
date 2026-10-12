@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useSearchStore } from "../store/searchStore";
+import { useLicenseStore } from "../store/licenseStore";
 import type { SearchResult } from "../store/searchStore";
 import { getPlatform } from "../lib/platform";
 import type { Platform } from "../lib/platform";
@@ -202,6 +203,15 @@ export const MobileApp = () => {
     void refreshRoots();
     void loadMyPicks();
   }, [refreshStats, refreshRoots, loadMyPicks]);
+
+  // Load the license and re-check server-issued tokens, so a refunded
+  // subscription is dropped on mobile too. Fails silently when offline.
+  useEffect(() => {
+    void useLicenseStore
+      .getState()
+      .refresh()
+      .then(() => useLicenseStore.getState().enforceRevocation());
+  }, []);
 
   // Debounced live search.
   useEffect(() => {

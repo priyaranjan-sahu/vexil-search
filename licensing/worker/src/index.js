@@ -3,6 +3,7 @@
 // - POST /webhook    Paddle Billing and Buy Me a Coffee webhook receiver
 //                    (verified via HMAC; provider auto-detected or pinned).
 // - POST /activate   `{ email, deviceId }` -> signed `.lic` token (device-bound).
+// - POST /verify     `{ email, deviceId }` -> `{ active }` (no side effects).
 // - POST /deactivate `{ email, deviceId }` -> frees a device seat.
 // - GET  /health     liveness.
 //
@@ -41,6 +42,7 @@ import {
 // device seats in seconds.
 const ACTIVATE_PER_IP = 20; // per minute
 const ACTIVATE_PER_EMAIL = 5; // per minute
+const VERIFY_PER_IP = 30; // per minute
 const DEACTIVATE_PER_IP = 20; // per minute
 const RATE_WINDOW_SECS = 60;
 
@@ -254,6 +256,11 @@ async function handleActivate(request, env) {
     issuedAt: nowSecs(),
     expiresAt,
     deviceId,
+    // Marks a server-issued token the client will re-check against `/verify`
+    // on startup, so a refunded/canceled license can be revoked even when the
+    // token itself has no expiry (one-time purchases). Offline keys omit this
+    // and are never revocation-checked.
+    renewable: true,
   };
   const privateKey = b64decode(env.PRIVATE_KEY);
   const license = signToken(payload, privateKey);
@@ -263,6 +270,38 @@ async function handleActivate(request, env) {
     await env.SEATS.put(`seats:${email}`, JSON.stringify(seats));
   }
   return jsonOk({ license });
+}
+
+async function handleVerify(request, env) {
+  const body = await request.json().catch(() => null);
+  if (!body) return jsonError(400, "Invalid JSON body");
+  const email = normalizeEmail(body.email);
+  const deviceId = String(body.deviceId || "").trim();
+  if (!email || !deviceId) {
+    return jsonError(400, "email and deviceId are required");
+  }
+
+  const ip = clientIp(request);
+  if (
+    await isRateLimited(
+      env.CUSTOMERS,
+      `verify:ip:${ip}`,
+      VERIFY_PER_IP,
+      RATE_WINDOW_SECS,
+    )
+  ) {
+    return jsonError(429, "Too many requests; try again shortly");
+  }
+
+  const customer = JSON.parse(
+    (await env.CUSTOMERS.get(`customer:${email}`)) || "null",
+  );
+  const seats = await readSeats(env, email);
+  const active = Boolean(customer?.active) && seats.includes(deviceId);
+  // Always 200 for a well-formed request: the client must be able to tell a
+  // definite "no longer active" apart from a transport/HTTP failure, and only
+  // drop a local license on the former.
+  return jsonOk({ active });
 }
 
 async function handleDeactivate(request, env) {
@@ -308,6 +347,9 @@ export default {
       }
       if (url.pathname === "/activate" && request.method === "POST") {
         return handleActivate(request, env);
+      }
+      if (url.pathname === "/verify" && request.method === "POST") {
+        return handleVerify(request, env);
       }
       if (url.pathname === "/deactivate" && request.method === "POST") {
         return handleDeactivate(request, env);

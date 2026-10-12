@@ -59,3 +59,7 @@ licensing/worker/.wrangler/
 # Android release signing (never commit)
 src-tauri/gen/android/app/keystore.properties
 src-tauri/gen/android/app/*.keystore
+
+# Stray root-level artifacts (accidentally committed, not source)
+/1465
+/social_preview.jpg
