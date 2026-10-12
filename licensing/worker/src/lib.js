@@ -47,6 +47,39 @@ export function normalizeEmail(email) {
     .trim();
 }
 
+// Length-independent, value-independent comparison for short secrets (hex
+// digests, device tokens). `a === b` short-circuits on the first differing
+// byte, which leaks position information through timing to anyone who can
+// measure it. This walks the full length regardless.
+export function constantTimeEqual(a, b) {
+  const x = String(a);
+  const y = String(b);
+  if (x.length !== y.length) return false;
+  let diff = 0;
+  for (let i = 0; i < x.length; i += 1) {
+    diff |= x.charCodeAt(i) ^ y.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+// Fixed-window rate limiter backed by KV.
+//
+// The counter is per (key, window) and TTL'd, so it self-cleans without a cron.
+// It is not perfectly atomic under concurrency (a burst can read the same
+// count twice), but it is enough to stop the abuse this exists for: scraping
+// `/activate` to enumerate paying emails, or filling a victim's device seats
+// from a script. Returns `true` when the caller is over budget.
+export async function isRateLimited(kv, key, limit, windowSecs) {
+  const bucket = Math.floor(Date.now() / 1000 / windowSecs);
+  const bucketKey = `rl:${key}:${bucket}`;
+  const current = Number((await kv.get(bucketKey)) || "0");
+  if (current >= limit) return true;
+  await kv.put(bucketKey, String(current + 1), {
+    expirationTtl: windowSecs * 2,
+  });
+  return false;
+}
+
 // Paddle Billing webhook verification.
 // Header `Paddle-Signature: ts=<ts>;h1=<hex>` where the HMAC-SHA256 of the
 // message `<ts>:<rawBody>` (hex-encoded HMAC) equals h1.
@@ -71,7 +104,7 @@ export async function verifyPaddleWebhook(secret, rawBody, signatureHeader) {
   const hex = [...new Uint8Array(mac)]
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
-  return hex === h1;
+  return constantTimeEqual(hex, h1);
 }
 
 // Buy Me a Coffee webhook verification.
@@ -97,7 +130,7 @@ export async function verifyBmcWebhook(secret, rawBody, signatureHeader) {
   const expected = [...new Uint8Array(mac)]
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
-  return expected === signatureHeader.trim().toLowerCase();
+  return constantTimeEqual(expected, signatureHeader.trim().toLowerCase());
 }
 
 // Maps a Paddle Billing webhook event to a customer-record update.

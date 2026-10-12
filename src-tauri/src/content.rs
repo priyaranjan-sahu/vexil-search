@@ -9,6 +9,10 @@ use quick_xml::Reader;
 const MAX_EXTRACT_CHARS: usize = 65_536;
 const MAX_TEXT_BYTES: u64 = 262_144;
 const MAX_ZIP_ENTRY_BYTES: u64 = 1_048_576;
+/// Whole-file ceiling for formats we hand to a third-party extractor (PDF).
+/// Those read the entire file into memory, so a single oversized input could
+/// otherwise exhaust RAM before the final truncate ever runs.
+const MAX_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
 
 pub fn should_index_content(ext: &str) -> bool {
     matches!(
@@ -35,11 +39,43 @@ pub fn extract_text(path: &Path, ext: &str) -> String {
     let text = match ext.as_str() {
         "docx" | "pptx" | "xlsx" | "epub" => safe(|| zip_text(path, &ext)).unwrap_or_default(),
         "pdf" => {
-            safe(|| pdf_extract::extract_text(path).map_err(|e| e.to_string())).unwrap_or_default()
+            // Refuse to load an enormous file into the extractor; matching on
+            // size here is cheap and bounds the extractor's memory up front.
+            let too_big = std::fs::metadata(path)
+                .map(|m| m.len() > MAX_SOURCE_BYTES)
+                .unwrap_or(false);
+            if too_big {
+                String::new()
+            } else {
+                safe(|| pdf_extract::extract_text(path).map_err(|e| e.to_string()))
+                    .unwrap_or_default()
+            }
         }
         _ => safe(|| plain_text(path)).unwrap_or_default(),
     };
     text.chars().take(MAX_EXTRACT_CHARS).collect()
+}
+
+/// Appends at most the remaining extraction budget, on a char boundary.
+///
+/// The final `truncate` in [`extract_text`] happens only after a format handler
+/// has built its full string. For zip formats that means every entry's text is
+/// held at once; bounding each append keeps the running total at
+/// `MAX_EXTRACT_CHARS` instead of `entries × MAX_ZIP_ENTRY_BYTES`.
+fn push_capped(dst: &mut String, src: &str) {
+    if dst.len() >= MAX_EXTRACT_CHARS {
+        return;
+    }
+    let remaining = MAX_EXTRACT_CHARS - dst.len();
+    if src.len() <= remaining {
+        dst.push_str(src);
+        return;
+    }
+    let mut end = remaining;
+    while end > 0 && !src.is_char_boundary(end) {
+        end -= 1;
+    }
+    dst.push_str(&src[..end]);
 }
 
 fn safe(f: impl FnOnce() -> Result<String, String>) -> Option<String> {
@@ -55,7 +91,26 @@ fn plain_text(path: &Path) -> Result<String, String> {
         .take(MAX_TEXT_BYTES)
         .read_to_end(&mut buf)
         .map_err(|e| e.to_string())?;
-    Ok(String::from_utf8_lossy(&buf).into_owned())
+    Ok(decode_text(&buf))
+}
+
+/// Decodes bytes to text, honouring a UTF-16 byte-order mark.
+///
+/// Windows tools commonly write UTF-16LE `.txt`/`.csv` with a BOM; decoding
+/// those as UTF-8 produces a string peppered with NULs that the trigram
+/// tokenizer cannot match, so searches for their contents silently fail.
+fn decode_text(bytes: &[u8]) -> String {
+    if let [0xFF, 0xFE, rest @ ..] = bytes {
+        let (chunks, _) = rest.as_chunks::<2>();
+        let units: Vec<u16> = chunks.iter().map(|c| u16::from_le_bytes(*c)).collect();
+        return String::from_utf16_lossy(&units);
+    }
+    if let [0xFE, 0xFF, rest @ ..] = bytes {
+        let (chunks, _) = rest.as_chunks::<2>();
+        let units: Vec<u16> = chunks.iter().map(|c| u16::from_be_bytes(*c)).collect();
+        return String::from_utf16_lossy(&units);
+    }
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 fn read_entry(archive: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Result<String, String> {
@@ -68,7 +123,7 @@ fn read_entry(archive: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Resul
         .take(MAX_ZIP_ENTRY_BYTES)
         .read_to_end(&mut buf)
         .map_err(|e| format!("read '{name}': {e}"))?;
-    Ok(String::from_utf8_lossy(&buf).into_owned())
+    Ok(decode_text(&buf))
 }
 
 fn zip_text(path: &Path, ext: &str) -> Result<String, String> {
@@ -85,8 +140,11 @@ fn zip_text(path: &Path, ext: &str) -> Result<String, String> {
                 let lc = n.to_lowercase();
                 lc.starts_with("ppt/slides/slide") && lc.ends_with(".xml")
             }) {
+                if out.len() >= MAX_EXTRACT_CHARS {
+                    break;
+                }
                 if let Ok(xml) = read_entry(&mut archive, &name) {
-                    out.push_str(&collect_text(&xml, &["t"], &["p"], &[]));
+                    push_capped(&mut out, &collect_text(&xml, &["t"], &["p"], &[]));
                     out.push('\n');
                 }
             }
@@ -95,8 +153,27 @@ fn zip_text(path: &Path, ext: &str) -> Result<String, String> {
         "xlsx" => {
             let mut out = String::new();
             for name in ["xl/sharedStrings.xml", "xl/inlineStrings.xml"] {
+                if out.len() >= MAX_EXTRACT_CHARS {
+                    break;
+                }
                 if let Ok(xml) = read_entry(&mut archive, name) {
-                    out.push_str(&collect_text(&xml, &["t"], &["si", "row"], &[]));
+                    push_capped(&mut out, &collect_text(&xml, &["t"], &["si", "row"], &[]));
+                    out.push('\n');
+                }
+            }
+            // Catch strings written inline into a sheet (`t="inlineStr"`) rather
+            // than into sharedStrings. They only ever appear as `<t>` elements,
+            // so this adds real text without picking up the numeric cell
+            // indices that a `<v>` sweep would.
+            for name in archive_names(&mut archive, |n| {
+                let lc = n.to_lowercase();
+                lc.starts_with("xl/worksheets/sheet") && lc.ends_with(".xml")
+            }) {
+                if out.len() >= MAX_EXTRACT_CHARS {
+                    break;
+                }
+                if let Ok(xml) = read_entry(&mut archive, &name) {
+                    push_capped(&mut out, &collect_text(&xml, &["t"], &[], &[]));
                     out.push('\n');
                 }
             }
@@ -108,15 +185,22 @@ fn zip_text(path: &Path, ext: &str) -> Result<String, String> {
                 let lc = n.to_lowercase();
                 lc.ends_with(".xhtml") || lc.ends_with(".html") || lc.ends_with(".htm")
             }) {
+                if out.len() >= MAX_EXTRACT_CHARS {
+                    break;
+                }
                 if let Ok(xml) = read_entry(&mut archive, &name) {
-                    out.push_str(&collect_text(
-                        &xml,
-                        &[],
-                        &[
-                            "p", "div", "li", "tr", "td", "th", "h1", "h2", "h3", "h4", "h5", "h6",
-                        ],
-                        &["style", "script"],
-                    ));
+                    push_capped(
+                        &mut out,
+                        &collect_text(
+                            &xml,
+                            &[],
+                            &[
+                                "p", "div", "li", "tr", "td", "th", "h1", "h2", "h3", "h4", "h5",
+                                "h6",
+                            ],
+                            &["style", "script"],
+                        ),
+                    );
                     out.push('\n');
                 }
             }
@@ -291,6 +375,56 @@ mod tests {
         let path = write_file(dir.path(), "notes.md", b"MARKDOWN_BODY hello world");
         let text = extract_text(&path, "md");
         assert_eq!(text, "MARKDOWN_BODY hello world");
+    }
+
+    #[test]
+    fn decodes_utf16_with_bom() {
+        let dir = tempdir().unwrap();
+        // Windows tools write UTF-16LE with a BOM; decoded as UTF-8 it would be
+        // full of NULs and the content would be unsearchable.
+        let mut bytes = vec![0xFF, 0xFE];
+        for u in "UTF16_MARKER notes".encode_utf16() {
+            bytes.extend_from_slice(&u.to_le_bytes());
+        }
+        let path = write_file(dir.path(), "utf16.txt", &bytes);
+        let text = extract_text(&path, "txt");
+        assert!(text.contains("UTF16_MARKER"), "got: {text:?}");
+        assert!(!text.contains('\u{0}'));
+    }
+
+    #[test]
+    fn extracts_xlsx_inline_strings() {
+        let dir = tempdir().unwrap();
+        let sheet = r#"<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>INLINE_CELL_MARKER</t></is></c><c r="B1"><v>42</v></c></row></sheetData></worksheet>"#;
+        let zip = make_zip(&[("xl/worksheets/sheet1.xml", sheet)]);
+        let path = write_file(dir.path(), "inline.xlsx", &zip);
+        let text = extract_text(&path, "xlsx");
+        assert!(text.contains("INLINE_CELL_MARKER"), "got: {text:?}");
+    }
+
+    #[test]
+    fn caps_total_extraction_across_zip_entries() {
+        let dir = tempdir().unwrap();
+        // Many large entries must not accumulate past the budget.
+        let big = "y".repeat(60_000);
+        let mut entries: Vec<(String, String)> = Vec::new();
+        for i in 0..10 {
+            entries.push((format!("ppt/slides/slide{i}.xml"), format!(
+                r#"<p:sld xmlns:p="urn:p"><p:cSld><p:spTree><p:t>{big}</p:t></p:spTree></p:cSld></p:sld>"#
+            )));
+        }
+        let refs: Vec<(&str, &str)> = entries
+            .iter()
+            .map(|(n, c)| (n.as_str(), c.as_str()))
+            .collect();
+        let zip = make_zip(&refs);
+        let path = write_file(dir.path(), "deck.pptx", &zip);
+        let text = extract_text(&path, "pptx");
+        assert!(
+            text.len() <= MAX_EXTRACT_CHARS,
+            "total {} exceeded cap",
+            text.len()
+        );
     }
 
     #[test]

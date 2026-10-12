@@ -68,4 +68,21 @@ describe("SettingsTab", () => {
     await flush();
     expect(onToast).toHaveBeenCalledWith("Imported 3 files");
   });
+
+  it("shows an indeterminate state before All Files Access is known", () => {
+    render(
+      <SettingsTab
+        platform="android"
+        allFilesAccess={null}
+        roots={[]}
+        onRemoveRoot={vi.fn()}
+        onReindex={vi.fn()}
+        onToast={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Checking…")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Grant Access" }),
+    ).not.toBeInTheDocument();
+  });
 });

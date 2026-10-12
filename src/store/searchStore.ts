@@ -259,7 +259,7 @@ export const useSearchStore = create<SearchState>()(
               category: get().activeCategory,
             });
             if (searchSeq !== seq) return;
-            set({ results, isSearching: false });
+            set({ results, isSearching: false, selectedResult: null });
           } catch (error) {
             if (searchSeq !== seq) return;
             console.error("Failed to search files:", error);
@@ -290,6 +290,7 @@ export const useSearchStore = create<SearchState>()(
             browseSections: Array.isArray(sections)
               ? (sections as BrowseSection[])
               : [],
+            selectedResult: null,
           });
         } catch (error) {
           if (browseSeq !== seq) return;
@@ -303,19 +304,27 @@ export const useSearchStore = create<SearchState>()(
         if (!(await confirmDelete(selected.title, selected.path))) return;
         try {
           await invoke("delete_file", { path: selected.path });
-          set((state) => ({
-            results: state.results.filter((r) => r.id !== selected.id),
-            browseSections: state.browseSections.map((section) => ({
-              ...section,
-              files: section.files.filter((r) => r.id !== selected.id),
-            })),
-            myPicks: state.myPicks.filter((p) => p.id !== selected.id),
-            recentItems: state.recentItems.filter((r) => r.id !== selected.id),
-            selectedResult: null,
-          }));
         } catch (error) {
           console.error("Failed to delete file:", error);
+          return;
         }
+        // The pick is owned by SQLite, so the local filter below is not enough:
+        // without this the deleted file reappears in My Picks on the next load.
+        try {
+          await invoke("remove_my_pick", { id: selected.id });
+        } catch (error) {
+          console.error("Failed to remove pick record:", error);
+        }
+        set((state) => ({
+          results: state.results.filter((r) => r.id !== selected.id),
+          browseSections: state.browseSections.map((section) => ({
+            ...section,
+            files: section.files.filter((r) => r.id !== selected.id),
+          })),
+          myPicks: state.myPicks.filter((p) => p.id !== selected.id),
+          recentItems: state.recentItems.filter((r) => r.id !== selected.id),
+          selectedResult: null,
+        }));
       },
     }),
     {

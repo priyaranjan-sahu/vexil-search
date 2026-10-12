@@ -41,6 +41,25 @@
   color: var(--brand-primary);
 }
 
+/* ---------------- Permission onboarding ---------------- */
+.mob-permission-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  background: var(--toolbar-bg);
+  border-bottom: 1px solid var(--surface-border);
+  color: var(--text-primary);
+  font-size: 0.82rem;
+  flex-shrink: 0;
+}
+
+.mob-permission-banner .mob-btn {
+  flex-shrink: 0;
+  margin-bottom: 0;
+}
+
 /* ---------------- Main + tab content ---------------- */
 .mob-main {
   flex: 1;

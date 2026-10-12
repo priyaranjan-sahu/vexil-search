@@ -29,11 +29,20 @@ import {
   paddleEventState,
   bmcEventState,
   unmappedReason,
+  isRateLimited,
   SEAT_LIMIT,
   PLAN,
   FEATURES,
   DAY_SECS,
 } from "./lib.js";
+
+// Per-window request budgets. Generous enough for a shared/NAT'd network, tight
+// enough that a script cannot enumerate emails or burn through a victim's three
+// device seats in seconds.
+const ACTIVATE_PER_IP = 20; // per minute
+const ACTIVATE_PER_EMAIL = 5; // per minute
+const DEACTIVATE_PER_IP = 20; // per minute
+const RATE_WINDOW_SECS = 60;
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -62,6 +71,15 @@ function preflight() {
 
 function nowSecs() {
   return Math.floor(Date.now() / 1000);
+}
+
+/** Best-effort client identity for rate limiting (Workers sets this header). */
+function clientIp(request) {
+  return (
+    request.headers.get("CF-Connecting-IP") ||
+    request.headers.get("x-forwarded-for") ||
+    "unknown"
+  );
 }
 
 async function readSeats(env, email) {
@@ -184,6 +202,28 @@ async function handleActivate(request, env) {
     return jsonError(400, "invalid deviceId (expected 16 hex chars)");
   }
 
+  // `/activate` is unauthenticated by design — the payment webhook is the thing
+  // that vests the email with an active record. Rate limiting is what stops a
+  // script from probing emails to learn who has paid, or from claiming all of a
+  // victim's device seats with made-up device ids.
+  const ip = clientIp(request);
+  if (
+    (await isRateLimited(
+      env.CUSTOMERS,
+      `activate:ip:${ip}`,
+      ACTIVATE_PER_IP,
+      RATE_WINDOW_SECS,
+    )) ||
+    (await isRateLimited(
+      env.CUSTOMERS,
+      `activate:email:${email}`,
+      ACTIVATE_PER_EMAIL,
+      RATE_WINDOW_SECS,
+    ))
+  ) {
+    return jsonError(429, "Too many activation attempts; try again shortly");
+  }
+
   const customer = JSON.parse(
     (await env.CUSTOMERS.get(`customer:${email}`)) || "null",
   );
@@ -230,6 +270,24 @@ async function handleDeactivate(request, env) {
   if (!body) return jsonError(400, "Invalid JSON body");
   const email = normalizeEmail(body.email);
   const deviceId = String(body.deviceId || "").trim();
+  if (!email || !deviceId) {
+    return jsonError(400, "email and deviceId are required");
+  }
+
+  // Unauthenticated state mutation, so it is rate limited like `/activate`.
+  // Without a budget an attacker could strip a victim's registered devices.
+  const ip = clientIp(request);
+  if (
+    await isRateLimited(
+      env.CUSTOMERS,
+      `deactivate:ip:${ip}`,
+      DEACTIVATE_PER_IP,
+      RATE_WINDOW_SECS,
+    )
+  ) {
+    return jsonError(429, "Too many requests; try again shortly");
+  }
+
   let seats = await readSeats(env, email);
   const before = seats.length;
   seats = seats.filter((d) => d !== deviceId);

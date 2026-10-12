@@ -26,6 +26,10 @@ pub fn open_db(path: &std::path::Path) -> SqlResult<Connection> {
     let conn = Connection::open(path)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
+    // Wait for a concurrent writer instead of failing immediately with
+    // SQLITE_BUSY. The indexer, watcher and UI all write through separate
+    // connections, so without this a brief overlap is a hard error.
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
 
     conn.create_scalar_function(
         "REGEXP",

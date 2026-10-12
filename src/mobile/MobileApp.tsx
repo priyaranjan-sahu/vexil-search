@@ -17,7 +17,7 @@ import {
   type FolderPickedDetail,
   type MobileRoot,
 } from "./types";
-import { hasAllFilesAccess, onNativeEvent } from "./native";
+import { hasAllFilesAccess, onNativeEvent, openAllFilesAccess } from "./native";
 import { SearchTab } from "./tabs/SearchTab";
 import { PicksTab } from "./tabs/PicksTab";
 import { RecentTab } from "./tabs/RecentTab";
@@ -39,7 +39,7 @@ export const MobileApp = () => {
   // Theme must reach the DOM on mobile too (desktop previously owned this).
   useThemeSync();
   const [platform, setPlatform] = useState<Platform>("desktop");
-  const [allFilesAccess, setAllFilesAccess] = useState(true);
+  const [allFilesAccess, setAllFilesAccess] = useState<boolean | null>(null);
   const [mobileRoots, setMobileRoots] = useState<MobileRoot[]>([]);
   const [activeTab, setActiveTab] = useState<TabKey>("search");
   const [actionResult, setActionResult] = useState<SearchResult | null>(null);
@@ -124,8 +124,11 @@ export const MobileApp = () => {
       const p = await getPlatform();
       if (disposed) return;
       setPlatform(p);
+      let canIndex = true;
       if (p === "android") {
-        setAllFilesAccess(hasAllFilesAccess());
+        const granted = hasAllFilesAccess();
+        setAllFilesAccess(granted);
+        canIndex = granted;
         unsubs.push(
           onNativeEvent<FolderPickedDetail>(
             ANDROID_EVENTS.folderPicked,
@@ -139,10 +142,16 @@ export const MobileApp = () => {
           ),
           onNativeEvent<AllFilesAccessDetail>(
             ANDROID_EVENTS.allFilesAccess,
-            (d) => setAllFilesAccess(d.granted),
+            (d) => {
+              setAllFilesAccess(d.granted);
+              // First scan on Android can only happen once access is granted:
+              // the indexer walks raw paths, which return nothing without it.
+              if (d.granted) void triggerIndexing();
+            },
           ),
         );
       }
+      if (canIndex) void triggerIndexing();
     };
     void boot();
 
@@ -184,15 +193,15 @@ export const MobileApp = () => {
     setToast,
   ]);
 
-  // Initial stats + indexing.
+  // Initial stats + roots. Indexing is kicked off from `boot` (and, on Android,
+  // only once All Files Access is confirmed) so we never scan an empty device.
   useEffect(() => {
     void refreshStats();
     // The setter runs after an awaited invoke, not synchronously in the effect.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void refreshRoots();
-    void triggerIndexing();
     void loadMyPicks();
-  }, [refreshStats, refreshRoots, triggerIndexing, loadMyPicks]);
+  }, [refreshStats, refreshRoots, loadMyPicks]);
 
   // Debounced live search.
   useEffect(() => {
@@ -249,6 +258,18 @@ export const MobileApp = () => {
               if (!(await confirmDelete(result.title, result.path))) return;
               try {
                 await invoke("delete_file", { path: result.path });
+              } catch (error) {
+                setToast(String(error));
+                return;
+              }
+              // Keep the backend's My Picks in step, or the row returns on the
+              // next load (same reason as the desktop handler).
+              try {
+                await invoke("remove_my_pick", { id: result.id });
+              } catch (error) {
+                console.error("Failed to remove pick record:", error);
+              }
+              try {
                 const s = useSearchStore.getState();
                 useSearchStore.setState({
                   results: s.results.filter((r) => r.id !== result.id),
@@ -337,6 +358,19 @@ export const MobileApp = () => {
           onAction={() => void openReleasePage(updateInfo)}
           onDismiss={dismissUpdate}
         />
+      )}
+
+      {platform === "android" && allFilesAccess === false && (
+        <div className="mob-permission-banner" role="alert">
+          <span>Allow file access to search this device.</span>
+          <button
+            type="button"
+            className="mob-btn"
+            onClick={openAllFilesAccess}
+          >
+            Allow Access
+          </button>
+        </div>
       )}
 
       <main className="mob-main">

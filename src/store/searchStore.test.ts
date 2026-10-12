@@ -93,3 +93,29 @@ describe("My Picks backend ownership", () => {
     expect(useSearchStore.getState().myPicks.map((p) => p.id)).toEqual([4]);
   });
 });
+
+describe("stale selection is cleared on new result sets", () => {
+  it("clears the selected result when a search returns", async () => {
+    invoke.mockResolvedValue([pick(1)]);
+    const useSearchStore = await freshStore();
+    // A row was selected, then the user searched again: the old row is no
+    // longer on screen, so keeping it selected would let Delete act on a file
+    // the user is not looking at.
+    useSearchStore.setState({ selectedResult: pick(99) });
+
+    await useSearchStore.getState().runSearch("new query", true);
+
+    expect(useSearchStore.getState().results.map((r) => r.id)).toEqual([1]);
+    expect(useSearchStore.getState().selectedResult).toBeNull();
+  });
+
+  it("clears the selected result when browse sections refresh", async () => {
+    invoke.mockResolvedValue([]);
+    const useSearchStore = await freshStore();
+    useSearchStore.setState({ selectedResult: pick(7) });
+
+    await useSearchStore.getState().runBrowse();
+
+    expect(useSearchStore.getState().selectedResult).toBeNull();
+  });
+});

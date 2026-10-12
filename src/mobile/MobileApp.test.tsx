@@ -148,6 +148,35 @@ describe("MobileApp shell", () => {
     vi.useRealTimers();
   });
 
+  it("gates indexing on All Files Access and prompts until granted", async () => {
+    const openAllFilesAccess = vi.fn();
+    (window as unknown as { VexilAndroid?: unknown }).VexilAndroid = {
+      hasAllFilesAccess: () => false,
+      openAllFilesAccess,
+      pickFolder: vi.fn(),
+    };
+    render(<MobileApp />);
+    await flush();
+    // Without access, indexing must not run: it would scan an empty device.
+    expect(
+      mockInvoke.mock.calls.some(([cmd]) => cmd === "start_indexing"),
+    ).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Allow Access" }));
+    expect(openAllFilesAccess).toHaveBeenCalledTimes(1);
+    // Granting access (native event) kicks off the first scan.
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent("vexil:all-files-access", {
+          detail: { granted: true },
+        }),
+      );
+      await Promise.resolve();
+    });
+    expect(
+      mockInvoke.mock.calls.some(([cmd]) => cmd === "start_indexing"),
+    ).toBe(true);
+  });
+
   it("shows an error toast when the clipboard write fails", async () => {
     vi.useFakeTimers();
     const writeText = vi.fn(() => Promise.reject(new Error("denied")));

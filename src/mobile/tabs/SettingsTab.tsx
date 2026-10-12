@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openExternalUrl } from "../../lib/openExternal";
 import { useLicenseStore } from "../../store/licenseStore";
 import { useSearchStore, Theme } from "../../store/searchStore";
 import type { Platform } from "../../lib/platform";
@@ -17,7 +17,7 @@ export const SettingsTab = ({
   onToast,
 }: {
   platform: Platform;
-  allFilesAccess: boolean;
+  allFilesAccess: boolean | null;
   roots: MobileRoot[];
   onRemoveRoot: (path: string) => void;
   onReindex: () => void;
@@ -164,13 +164,15 @@ export const SettingsTab = ({
                 <div className="mob-settings-row">
                   <span>
                     All Files Access:{" "}
-                    {allFilesAccess ? (
+                    {allFilesAccess === null ? (
+                      <span className="mob-hint">Checking…</span>
+                    ) : allFilesAccess ? (
                       <span className="mob-success">Granted</span>
                     ) : (
                       <span className="mob-error">Not granted</span>
                     )}
                   </span>
-                  {!allFilesAccess && (
+                  {allFilesAccess === false && (
                     <button
                       type="button"
                       className="mob-btn"
@@ -253,7 +255,7 @@ export const SettingsTab = ({
               href="#"
               onClick={(e) => {
                 e.preventDefault();
-                void openUrl(
+                openExternalUrl(
                   "https://github.com/priyaranjan-sahu/vexil-search/blob/master/PRIVACY_POLICY.md",
                 );
               }}
@@ -264,7 +266,7 @@ export const SettingsTab = ({
               href="#"
               onClick={(e) => {
                 e.preventDefault();
-                void openUrl(
+                openExternalUrl(
                   "https://github.com/priyaranjan-sahu/vexil-search/blob/master/TERMS_AND_CONDITIONS.md",
                 );
               }}
@@ -275,7 +277,7 @@ export const SettingsTab = ({
               href="#"
               onClick={(e) => {
                 e.preventDefault();
-                void openUrl(
+                openExternalUrl(
                   "https://github.com/priyaranjan-sahu/vexil-search/issues/new",
                 );
               }}

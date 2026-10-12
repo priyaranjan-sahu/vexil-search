@@ -4,7 +4,6 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { message } from "@tauri-apps/plugin-dialog";
 import "./App.css";
 
@@ -12,6 +11,7 @@ import { DirectoryTree } from "./components/DirectoryTree";
 import { ResultsTable } from "./components/ResultsTable";
 import { TrashPanel } from "./components/TrashPanel";
 import { TRASH_RETENTION_DAYS } from "./lib/confirmDelete";
+import { openExternalUrl } from "./lib/openExternal";
 import { useUpdateInfo, applyUpdate } from "./lib/updates";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { useSearchStore, SearchResult, Theme } from "./store/searchStore";
@@ -138,11 +138,19 @@ function App() {
 
   // Silently renew a recurring license before it lapses (lazy online check-in).
   // Offline or a lapsed subscription leaves the current token until expiry.
+  //
+  // Guarded to one attempt per session: a successful renewal installs a fresh
+  // 30-day token, which is itself inside the "renew soon" window, so an
+  // unguarded effect would re-run on the new status and hammer the activation
+  // server for as long as the app stayed open.
+  const renewalAttemptedRef = useRef(false);
   useEffect(() => {
     const status = useLicenseStore.getState().status;
     if (!status?.pro || !status.expiresAt || !status.userId) return;
+    if (renewalAttemptedRef.current) return;
     const nowSecs = Math.floor(Date.now() / 1000);
     if (status.expiresAt - nowSecs < 30 * 86_400) {
+      renewalAttemptedRef.current = true;
       void useLicenseStore.getState().activateWithEmail(status.userId);
     }
   }, [pro, licenseStatus]);
@@ -636,7 +644,7 @@ function App() {
               <div
                 className="menu-dropdown-item"
                 onClick={() => {
-                  openUrl(
+                  openExternalUrl(
                     "https://github.com/priyaranjan-sahu/vexil-search/issues/new",
                   );
                   setActiveMenu(null);
@@ -1322,7 +1330,7 @@ function App() {
                   href="#"
                   onClick={(e) => {
                     e.preventDefault();
-                    openUrl(
+                    openExternalUrl(
                       "https://github.com/priyaranjan-sahu/vexil-search/blob/master/PRIVACY_POLICY.md",
                     );
                   }}
@@ -1338,7 +1346,7 @@ function App() {
                   href="#"
                   onClick={(e) => {
                     e.preventDefault();
-                    openUrl(
+                    openExternalUrl(
                       "https://github.com/priyaranjan-sahu/vexil-search/blob/master/TERMS_AND_CONDITIONS.md",
                     );
                   }}
@@ -1434,7 +1442,7 @@ function App() {
                 href="#"
                 onClick={(e) => {
                   e.preventDefault();
-                  openUrl(
+                  openExternalUrl(
                     "https://github.com/priyaranjan-sahu/vexil-search/issues/new",
                   );
                 }}

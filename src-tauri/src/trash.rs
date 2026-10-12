@@ -121,12 +121,14 @@ pub fn move_to_trash(pool: &DbPool, trash_root: &Path, path: &Path) -> Result<Tr
         }
     }
 
-    match fs::rename(path, &target) {
-        Ok(()) => {}
-        Err(_) => move_across_filesystems(path, &target)?,
-    }
-
     let conn = pool.get().map_err(|_| "DB pool error".to_string())?;
+
+    // Record the row *before* the file moves. The two steps are not atomic, so
+    // one of them must be able to survive the other failing. Writing the row
+    // first means a crash in between leaves a row whose file is still in place,
+    // which `restore` and `empty` already handle (both drop a row whose file has
+    // vanished). Doing it the other way—moving first—would strand the file in
+    // the trash with no row naming it, and nothing in the UI could get it back.
     conn.execute(
         "INSERT INTO trash (original_path, trash_path, name, size_bytes, deleted_at)
          VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -139,9 +141,21 @@ pub fn move_to_trash(pool: &DbPool, trash_root: &Path, path: &Path) -> Result<Tr
         ],
     )
     .map_err(|e| format!("Could not record trashed file: {e}"))?;
+    let id = conn.last_insert_rowid();
+
+    let moved = match fs::rename(path, &target) {
+        Ok(()) => Ok(()),
+        Err(_) => move_across_filesystems(path, &target),
+    };
+    if let Err(e) = moved {
+        // Nothing left the original folder, so the restore this row would offer
+        // is a lie: drop it and report the failure the caller saw.
+        let _ = conn.execute("DELETE FROM trash WHERE id = ?1", params![id]);
+        return Err(e);
+    }
 
     Ok(TrashItem {
-        id: conn.last_insert_rowid(),
+        id,
         name,
         original_path,
         size_bytes,
@@ -276,13 +290,20 @@ pub fn empty(pool: &DbPool) -> Result<usize, String> {
     let conn = pool.get().map_err(|_| "DB pool error".to_string())?;
     let entries = id_and_path(&conn, None)?;
     let mut removed = 0usize;
-    for (_, path) in &entries {
+    for (id, path) in &entries {
+        // A file that cannot be removed keeps its row, exactly as in
+        // `purge_expired`: reporting success and then deleting the row would
+        // turn a still-present file into an untracked one the panel can no
+        // longer restore. A file that has already gone still loses its row.
         match fs::remove_file(path) {
-            Ok(()) | Err(_) => removed += 1,
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => continue,
         }
+        conn.execute("DELETE FROM trash WHERE id = ?1", params![id])
+            .map_err(|e| format!("Could not empty the trash: {e}"))?;
+        removed += 1;
     }
-    conn.execute("DELETE FROM trash", [])
-        .map_err(|e| format!("Could not empty the trash: {e}"))?;
     Ok(removed)
 }
 
@@ -544,6 +565,55 @@ mod tests {
         // Nothing left behind in the trash directory either.
         let left = fs::read_dir(&bin).unwrap().count();
         assert_eq!(left, 0, "trash directory should be empty");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A file that cannot be removed must keep its row so it stays reachable,
+    /// rather than being reported as emptied and then forgotten.
+    #[test]
+    fn empty_keeps_rows_for_files_it_could_not_remove() {
+        let root = temp_root("empty-fail");
+        let pool = pool_at(&root.join("db"));
+        let bin = root.join(".trash");
+        fs::create_dir_all(&bin).unwrap();
+
+        // A directory in the trash path makes `remove_file` fail the same way a
+        // locked or permission-denied file would.
+        let stubborn = bin.join("stubborn");
+        fs::create_dir_all(&stubborn).unwrap();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO trash (original_path, trash_path, name, size_bytes, deleted_at)
+                 VALUES ('/x/stubborn', ?1, 'stubborn', 0, 1)",
+                params![stubborn.to_string_lossy()],
+            )
+            .unwrap();
+        }
+
+        assert_eq!(empty(&pool).unwrap(), 0, "nothing removable went");
+        assert_eq!(list(&pool).unwrap().len(), 1, "row must survive");
+
+        // Once the obstruction is gone the row can be emptied as normal.
+        fs::remove_dir_all(&stubborn).unwrap();
+        assert_eq!(empty(&pool).unwrap(), 1);
+        assert!(list(&pool).unwrap().is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A failed move must not leave a row pointing at a file that never left.
+    #[test]
+    fn failed_move_records_no_trash_row() {
+        let root = temp_root("move-fail");
+        let pool = pool_at(&root.join("db"));
+        let bin = root.join(".trash");
+        let missing = root.join("does-not-exist.txt");
+
+        assert!(move_to_trash(&pool, &bin, &missing).is_err());
+        assert!(
+            list(&pool).unwrap().is_empty(),
+            "a move that never happened must not be recorded"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 

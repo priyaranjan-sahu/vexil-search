@@ -93,7 +93,42 @@ fn platform_machine_id() -> Option<String> {
     key.get_value::<String, _>("MachineGuid").ok()
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+fn platform_machine_id() -> Option<String> {
+    // macOS has no /etc/machine-id. The hardware UUID is what survives a
+    // reinstall and is per-machine, unlike the previous fallback
+    // (`fallback:|macos|<arch>`), which was identical for every Mac of the same
+    // architecture and so collapsed every user onto one "device".
+    let out = std::process::Command::new("ioreg")
+        .args(["-rd1", "-c", "IOPlatformExpertDevice"])
+        .output()
+        .ok()?;
+    uuid_from_ioreg(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Pulls `IOPlatformUUID` out of `ioreg` output. Split out from the command so
+/// it can be tested without macOS.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn uuid_from_ioreg(text: &str) -> Option<String> {
+    for line in text.lines() {
+        if let Some((_, rhs)) = line.split_once("IOPlatformUUID") {
+            if let Some((_, val)) = rhs.split_once('=') {
+                let uuid = val
+                    .trim()
+                    .trim_end_matches(';')
+                    .trim()
+                    .trim_matches('"')
+                    .trim();
+                if !uuid.is_empty() {
+                    return Some(uuid.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn platform_machine_id() -> Option<String> {
     for p in ["/etc/machine-id", "/var/lib/dbus/machine-id"] {
         if let Ok(s) = std::fs::read_to_string(p) {
@@ -528,6 +563,20 @@ mod tests {
             expires_at: None,
             device_id: None,
         }
+    }
+
+    #[test]
+    fn uuid_from_ioreg_reads_the_hardware_uuid() {
+        let sample = "\
+      \"IOPlatformExpertDevice\" = {
+        \"IOPlatformUUID\" = \"A1B2C3D4-1234-5678-9ABC-DEF012345678\";
+        \"IOPlatformSerialNumber\" = \"C02ABCDEFGH\";
+      }";
+        assert_eq!(
+            uuid_from_ioreg(sample).as_deref(),
+            Some("A1B2C3D4-1234-5678-9ABC-DEF012345678")
+        );
+        assert_eq!(uuid_from_ioreg("nothing here"), None);
     }
 
     #[test]

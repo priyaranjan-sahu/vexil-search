@@ -13,7 +13,7 @@ use notify::{Event, EventKind, RecursiveMode, Watcher};
 use rusqlite::params;
 use serde::Serialize;
 use std::path::PathBuf;
-use std::sync::mpsc::channel;
+use std::sync::mpsc::{channel, sync_channel};
 use std::sync::Mutex;
 use std::thread;
 #[cfg(desktop)]
@@ -194,7 +194,11 @@ fn start_indexing(
         builder.ignore(true);
         builder.git_ignore(true);
 
-        let (tx, rx) = channel();
+        // Bounded so the parallel walker can never outrun the single SQLite
+        // writer and buffer the whole filesystem's metadata (plus extracted
+        // text) in memory. When the queue is full the walker threads block
+        // instead, which is the backpressure we want.
+        let (tx, rx) = sync_channel(1024);
         let exclusions_arc = std::sync::Arc::new(exclusions);
 
         log::debug!("WalkBuilder initialized in {:?}", start_time.elapsed());
@@ -376,14 +380,20 @@ fn start_indexing(
         // flush remainder
         process_batches(&mut conn, &mut batch_insert, &mut batch_sync);
 
-        // Stale file cleanup
+        // Stale file cleanup. The walker stamps every file it sees with this
+        // scan's `sync_id`; anything still carrying an *older* stamp was not
+        // seen in this scan and no longer exists. The predicate is `<` and not
+        // `!=` on purpose: the Live Radar watcher stamps live changes with the
+        // current wall-clock time, which can be *newer* than this scan's stamp
+        // for a file created while the scan is running. Those rows must survive
+        // this GC, not be swept up as "different from the scan id".
         let _ = conn.execute_batch("BEGIN");
         let _ = conn.execute(
-            "DELETE FROM file_index WHERE path IN (SELECT path FROM file_metadata WHERE sync_id != ?1)",
+            "DELETE FROM file_index WHERE path IN (SELECT path FROM file_metadata WHERE sync_id < ?1)",
             params![sync_id],
         );
         let _ = conn.execute(
-            "DELETE FROM file_metadata WHERE sync_id != ?1",
+            "DELETE FROM file_metadata WHERE sync_id < ?1",
             params![sync_id],
         );
         let _ = conn.execute_batch("COMMIT");
@@ -1265,6 +1275,9 @@ pub fn run() {
                 .with_init(|c| {
                     c.pragma_update(None, "journal_mode", "WAL")?;
                     c.pragma_update(None, "synchronous", "NORMAL")?;
+                    // Match `open_db`: wait out a concurrent writer rather than
+                    // surfacing SQLITE_BUSY to the user.
+                    c.busy_timeout(std::time::Duration::from_secs(5))?;
                     c.create_scalar_function(
                         "REGEXP",
                         2,
@@ -1310,6 +1323,11 @@ pub fn run() {
 
                 if let Some(dl_dir) = dirs::download_dir() {
                     let _ = watcher.watch(&dl_dir, RecursiveMode::Recursive);
+                }
+                // Watch every default scan root, not just Downloads: a file that
+                // lands in Documents should show up in Live Radar too.
+                if let Some(doc_dir) = dirs::document_dir() {
+                    let _ = watcher.watch(&doc_dir, RecursiveMode::Recursive);
                 }
 
                 let mut pending_paths = std::collections::HashSet::new();
@@ -1398,11 +1416,18 @@ pub fn run() {
                                 let _ = conn.execute("DELETE FROM file_index WHERE path = ?1", params![&path_str]);
                                 let _ = conn.execute("INSERT INTO file_index (title, path, content) VALUES (?1, ?2, ?3)", params![&title_str, &path_str, &content_str]);
 
-                                // Upsert metadata with the file's category, preserving sync_id
-                                // (stale-GC uses sync_id, so keep it on updates)
+                                // Upsert metadata with the file's category. Stamp
+                                // the change with the current time so the stale
+                                // GC (which only removes stamps older than a
+                                // scan's start) keeps this row, including for a
+                                // file created or edited while a scan is running.
+                                let live_sync_id = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_secs() as i64)
+                                    .unwrap_or(mtime);
                                 let _ = conn.execute(
-                                    "INSERT INTO file_metadata (path, mtime, size, sync_id, category) VALUES (?1, ?2, ?3, 0, ?4) ON CONFLICT(path) DO UPDATE SET mtime = excluded.mtime, size = excluded.size, category = excluded.category",
-                                    params![&path_str, mtime, size as i64, &category],
+                                    "INSERT INTO file_metadata (path, mtime, size, sync_id, category) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(path) DO UPDATE SET mtime = excluded.mtime, size = excluded.size, category = excluded.category, sync_id = excluded.sync_id",
+                                    params![&path_str, mtime, size as i64, live_sync_id, &category],
                                 );
 
                                 processed_paths.push(path_str);

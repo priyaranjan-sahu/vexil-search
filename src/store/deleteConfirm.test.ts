@@ -64,4 +64,16 @@ describe("handleDelete", () => {
 
     expect(invoke).not.toHaveBeenCalled();
   });
+
+  it("drops the SQLite pick so a deleted file cannot resurrect in My Picks", async () => {
+    confirmMock.mockResolvedValue(true);
+    const useSearchStore = await freshStore();
+    const target = pick(8);
+    useSearchStore.setState({ selectedResult: target, myPicks: [target] });
+
+    await useSearchStore.getState().handleDelete();
+
+    expect(invoke).toHaveBeenCalledWith("remove_my_pick", { id: target.id });
+    expect(useSearchStore.getState().myPicks).toEqual([]);
+  });
 });
