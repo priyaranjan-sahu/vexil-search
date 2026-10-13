@@ -25,6 +25,9 @@ use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
 mod db;
 mod mobile;
+// Android-only: bridges to the Storage Access Framework through JNI.
+#[cfg(target_os = "android")]
+mod saf;
 mod trash;
 mod updates;
 
@@ -35,6 +38,11 @@ struct AppState {
 }
 
 static INDEX_GEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// One indexed item as it flows from a scanner to the database writer:
+/// (title, path, content, mtime, size, category).
+#[cfg(target_os = "android")]
+pub(crate) type IndexRow = (String, String, String, i64, i64, String);
 
 // Directories that are never worth indexing
 fn is_junk_dir(name: &str) -> bool {
@@ -81,7 +89,7 @@ fn get_platform() -> String {
 }
 
 #[tauri::command]
-fn start_indexing(
+async fn start_indexing(
     app_handle: AppHandle,
     custom_dirs: Option<Vec<String>>,
     excluded_dirs: Option<Vec<String>>,
@@ -156,7 +164,7 @@ fn start_indexing(
         let mut dirs_to_scan = Vec::new();
         #[cfg(mobile)]
         {
-            dirs_to_scan.extend(mobile::scan_roots(&app_handle));
+            dirs_to_scan.extend(mobile::raw_scan_roots(&app_handle));
         }
         #[cfg(not(mobile))]
         {
@@ -181,127 +189,206 @@ fn start_indexing(
         let mut count: i64 = 0;
         const BATCH: usize = 500;
 
-        if dirs_to_scan.is_empty() {
+        // On Android without All Files Access, picked folders are only reachable
+        // through SAF, so there can be SAF roots even when no raw directory is
+        // indexable.
+        #[cfg(target_os = "android")]
+        let saf_roots = mobile::saf_scan_roots(&app_handle);
+        #[cfg(not(target_os = "android"))]
+        let saf_roots: Vec<mobile::MobileRoot> = Vec::new();
+
+        if dirs_to_scan.is_empty() && saf_roots.is_empty() {
             return done(0);
         }
-
-        let mut builder = ignore::WalkBuilder::new(&dirs_to_scan[0]);
-        for dir in dirs_to_scan.iter().skip(1) {
-            builder.add(dir);
-        }
-        // Don't traverse hidden directories since we are looking for user documents mostly
-        builder.hidden(true);
-        builder.ignore(true);
-        builder.git_ignore(true);
 
         // Bounded so the parallel walker can never outrun the single SQLite
         // writer and buffer the whole filesystem's metadata (plus extracted
         // text) in memory. When the queue is full the walker threads block
         // instead, which is the backpressure we want.
         let (tx, rx) = sync_channel(1024);
+        #[cfg(target_os = "android")]
+        let saf_tx = tx.clone();
+
         let exclusions_arc = std::sync::Arc::new(exclusions);
 
-        log::debug!("WalkBuilder initialized in {:?}", start_time.elapsed());
+        if dirs_to_scan.is_empty() {
+            // No raw directories: the SAF thread below keeps `tx` alive.
+            drop(tx);
+            drop(exclusions_arc);
+        } else {
+            let mut builder = ignore::WalkBuilder::new(&dirs_to_scan[0]);
+            for dir in dirs_to_scan.iter().skip(1) {
+                builder.add(dir);
+            }
+            // Don't traverse hidden directories since we are looking for user documents mostly
+            builder.hidden(true);
+            builder.ignore(true);
+            builder.git_ignore(true);
 
-        // Spawn parallel walker
-        thread::spawn(move || {
-            builder.build_parallel().run(|| {
-                let tx = tx.clone();
-                let exclusions = exclusions_arc.clone();
-                Box::new(move |result| {
-                    if INDEX_GEN.load(std::sync::atomic::Ordering::SeqCst) != current_gen {
-                        return ignore::WalkState::Quit;
-                    }
-                    if let Ok(entry) = result {
-                        if exclusions.contains(entry.path()) {
-                            return ignore::WalkState::Skip;
+            log::debug!("WalkBuilder initialized in {:?}", start_time.elapsed());
+
+            // Spawn parallel walker
+            thread::spawn(move || {
+                builder.build_parallel().run(|| {
+                    let tx = tx.clone();
+                    let exclusions = exclusions_arc.clone();
+                    Box::new(move |result| {
+                        if INDEX_GEN.load(std::sync::atomic::Ordering::SeqCst) != current_gen {
+                            return ignore::WalkState::Quit;
                         }
-                        if let Some(file_type) = entry.file_type() {
-                            let is_dir = file_type.is_dir();
-                            if is_dir && is_junk_dir(&entry.file_name().to_string_lossy()) {
+                        if let Ok(entry) = result {
+                            if exclusions.contains(entry.path()) {
                                 return ignore::WalkState::Skip;
                             }
+                            if let Some(file_type) = entry.file_type() {
+                                let is_dir = file_type.is_dir();
+                                if is_dir && is_junk_dir(&entry.file_name().to_string_lossy()) {
+                                    return ignore::WalkState::Skip;
+                                }
 
-                            let path_str = entry.path().to_string_lossy().to_string();
-                            let title_str = entry.file_name().to_string_lossy().to_string();
-                            let ext = entry
-                                .path()
-                                .extension()
-                                .and_then(|e| e.to_str())
-                                .unwrap_or("");
-                            let category = get_category(is_dir, ext);
+                                let path_str = entry.path().to_string_lossy().to_string();
+                                let title_str = entry.file_name().to_string_lossy().to_string();
+                                let ext = entry
+                                    .path()
+                                    .extension()
+                                    .and_then(|e| e.to_str())
+                                    .unwrap_or("");
+                                let category = get_category(is_dir, ext);
 
-                            let metadata = entry.metadata().ok();
-                            let mtime = metadata
-                                .as_ref()
-                                .and_then(|m| m.modified().ok())
-                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                                .map(|d| d.as_secs() as i64)
-                                .unwrap_or(0);
-                            let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+                                let metadata = entry.metadata().ok();
+                                let mtime = metadata
+                                    .as_ref()
+                                    .and_then(|m| m.modified().ok())
+                                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                    .map(|d| d.as_secs() as i64)
+                                    .unwrap_or(0);
+                                let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
 
-                            let mut text_content = String::new();
-                            if file_type.is_file() && content::should_index_content(ext) {
-                                text_content = content::extract_text(entry.path(), ext);
+                                let mut text_content = String::new();
+                                if file_type.is_file() && content::should_index_content(ext) {
+                                    text_content = content::extract_text(entry.path(), ext);
+                                }
+
+                                let content_str =
+                                    format!("{} {} {}", title_str, path_str, text_content);
+                                let _ = tx.send((
+                                    title_str,
+                                    path_str,
+                                    content_str,
+                                    mtime,
+                                    size as i64,
+                                    category,
+                                ));
                             }
-
-                            let content_str =
-                                format!("{} {} {}", title_str, path_str, text_content);
-                            let _ = tx.send((
-                                title_str,
-                                path_str,
-                                content_str,
-                                mtime,
-                                size as i64,
-                                category,
-                            ));
                         }
+                        ignore::WalkState::Continue
+                    })
+                });
+            }); // tx is dropped here when parallel walker finishes
+        }
+
+        // Walk picked SAF folders through the same channel so they share the
+        // single SQLite writer below.
+        #[cfg(target_os = "android")]
+        if !saf_roots.is_empty() {
+            let saf_app = app_clone.clone();
+            thread::spawn(move || {
+                mobile::scan_saf_roots(&saf_app, &saf_roots, |row| {
+                    if INDEX_GEN.load(std::sync::atomic::Ordering::SeqCst) != current_gen {
+                        return false;
                     }
-                    ignore::WalkState::Continue
-                })
+                    saf_tx.send(row).is_ok()
+                });
             });
-        }); // tx is dropped here when parallel walker finishes
+        }
 
         let mut batch_insert: Vec<(String, String, String, i64, i64, String)> =
             Vec::with_capacity(BATCH);
         let mut batch_sync: Vec<String> = Vec::with_capacity(BATCH);
 
-        let process_batches = |conn: &mut rusqlite::Connection,
+        let process_batches = |conn: &rusqlite::Connection,
                                b_insert: &mut Vec<(String, String, String, i64, i64, String)>,
-                               b_sync: &mut Vec<String>| {
+                               b_sync: &mut Vec<String>|
+         -> i64 {
             if b_insert.is_empty() && b_sync.is_empty() {
-                return;
+                return 0;
             }
-            if conn.execute_batch("BEGIN").is_err() {
-                log::error!("Failed to BEGIN batch transaction during indexing");
-                return;
-            }
+            // Take ownership of the batch so a failure can never silently drop
+            // rows: if the transaction aborts, the rows are retried individually
+            // below instead of being consumed by a dropped `drain` iterator.
+            let inserts = std::mem::take(b_insert);
+            let syncs = std::mem::take(b_sync);
+
             let batch_result = (|| -> rusqlite::Result<()> {
-                if !b_insert.is_empty() {
+                conn.execute_batch("BEGIN")?;
+                if !inserts.is_empty() {
                     let mut stmt_idx = conn.prepare_cached(
                         "INSERT INTO file_index (title, path, content) VALUES (?1, ?2, ?3)",
                     )?;
                     let mut stmt_meta = conn.prepare_cached(
                         "INSERT OR REPLACE INTO file_metadata (path, mtime, size, sync_id, category) VALUES (?1, ?2, ?3, ?4, ?5)",
                     )?;
-                    for (t, p, c, m, s, cat) in b_insert.drain(..) {
+                    for (t, p, c, m, s, cat) in &inserts {
                         stmt_idx.execute(params![t, p, c])?;
                         stmt_meta.execute(params![p, m, s, sync_id, cat])?;
                     }
                 }
-                if !b_sync.is_empty() {
+                if !syncs.is_empty() {
                     let mut stmt_update = conn
                         .prepare_cached("UPDATE file_metadata SET sync_id = ?1 WHERE path = ?2")?;
-                    for p in b_sync.drain(..) {
+                    for p in &syncs {
                         stmt_update.execute(params![sync_id, p])?;
                     }
                 }
                 conn.execute_batch("COMMIT")
             })();
-            if let Err(e) = batch_result {
-                let _ = conn.execute_batch("ROLLBACK");
-                log::error!("Batch insert failed during indexing: {e}");
+
+            if batch_result.is_ok() {
+                return inserts.len() as i64;
             }
+
+            // One bad row used to abort the whole transaction *and* drop the
+            // rest of the batch, then still report it as indexed. Roll back and
+            // retry each row on its own so a single unindexable file cannot take
+            // its neighbours with it, and so the returned count is truthful.
+            let _ = conn.execute_batch("ROLLBACK");
+            log::error!(
+                "Batch transaction failed; retrying {} rows individually",
+                inserts.len()
+            );
+            let mut committed: i64 = 0;
+            for (t, p, c, m, s, cat) in &inserts {
+                let single = (|| -> rusqlite::Result<()> {
+                    conn.execute_batch("BEGIN")?;
+                    {
+                        let mut stmt_idx = conn.prepare_cached(
+                            "INSERT INTO file_index (title, path, content) VALUES (?1, ?2, ?3)",
+                        )?;
+                        stmt_idx.execute(params![t, p, c])?;
+                    }
+                    {
+                        let mut stmt_meta = conn.prepare_cached(
+                            "INSERT OR REPLACE INTO file_metadata (path, mtime, size, sync_id, category) VALUES (?1, ?2, ?3, ?4, ?5)",
+                        )?;
+                        stmt_meta.execute(params![p, m, s, sync_id, cat])?;
+                    }
+                    conn.execute_batch("COMMIT")
+                })();
+                match single {
+                    Ok(()) => committed += 1,
+                    Err(e) => {
+                        let _ = conn.execute_batch("ROLLBACK");
+                        log::error!("Skipping file that could not be indexed ({p}): {e}");
+                    }
+                }
+            }
+            for p in &syncs {
+                let _ = conn.execute(
+                    "UPDATE file_metadata SET sync_id = ?1 WHERE path = ?2",
+                    params![sync_id, p],
+                );
+            }
+            committed
         };
 
         let mut check_mtime =
@@ -321,11 +408,15 @@ fn start_indexing(
         };
 
         let mut first_file = true;
+        // Rows actually committed, as opposed to `count` (files seen). The two
+        // differ only when a row fails to index, and `indexing-done` must report
+        // the former so the number the user sees is trustworthy.
+        let mut indexed: i64 = 0;
 
         while let Ok((t, p, c, m, s, cat)) = rx.recv() {
             if INDEX_GEN.load(std::sync::atomic::Ordering::SeqCst) != current_gen {
                 log::debug!("Indexing cancelled by new generation");
-                return done(count);
+                return done(indexed);
             }
 
             if first_file {
@@ -354,7 +445,7 @@ fn start_indexing(
             if batch_insert.len() >= BATCH || batch_sync.len() >= BATCH {
                 drop(check_mtime); // MUST drop prepared statements before processing batch due to connection mutability
                 drop(delete_idx);
-                process_batches(&mut conn, &mut batch_insert, &mut batch_sync);
+                indexed += process_batches(&mut conn, &mut batch_insert, &mut batch_sync);
                 (check_mtime, delete_idx) = match conn
                     .prepare_cached("SELECT mtime FROM file_metadata WHERE path = ?1")
                     .and_then(|stmt| {
@@ -364,7 +455,7 @@ fn start_indexing(
                     Ok(pair) => pair,
                     Err(e) => {
                         log::error!("Failed to re-prepare indexing statements: {e}");
-                        return done(count);
+                        return done(indexed);
                     }
                 };
             }
@@ -378,7 +469,7 @@ fn start_indexing(
         drop(delete_idx);
 
         // flush remainder
-        process_batches(&mut conn, &mut batch_insert, &mut batch_sync);
+        indexed += process_batches(&mut conn, &mut batch_insert, &mut batch_sync);
 
         // Stale file cleanup. The walker stamps every file it sees with this
         // scan's `sync_id`; anything still carrying an *older* stamp was not
@@ -398,22 +489,29 @@ fn start_indexing(
         );
         let _ = conn.execute_batch("COMMIT");
 
-        done(count);
+        done(indexed);
     });
 
     Ok("Indexing started in the background".to_string())
 }
 
 #[tauri::command]
-fn search_files(
+async fn search_files(
     app_handle: AppHandle,
     query: String,
     category: String,
+    limit: Option<i64>,
+    offset: Option<i64>,
 ) -> Result<Vec<SearchResult>, String> {
     let trimmed_query = query.trim();
     if trimmed_query.is_empty() {
         return Ok(vec![]);
     }
+
+    // 2.7: callers page through results instead of silently receiving the first
+    // 50. Clamp the window so a bad client cannot ask for the whole table.
+    let limit = limit.unwrap_or(50).clamp(1, 200);
+    let offset = offset.unwrap_or(0).max(0);
 
     let pool = app_handle.state::<db::DbPool>();
     let conn = pool.get().map_err(|_| "DB pool error".to_string())?;
@@ -444,12 +542,20 @@ fn search_files(
                    m.size, m.mtime, m.category
             FROM file_index f
             LEFT JOIN file_metadata m ON f.path = m.path
-            WHERE (f.path LIKE ?1 OR f.title LIKE ?2) {}
-            LIMIT 50
+            WHERE (f.path LIKE ?1 ESCAPE '\\' OR f.title LIKE ?2 ESCAPE '\\') {}
+            ORDER BY f.rowid
+            LIMIT {limit} OFFSET {offset}
         ",
             cat_filter
         );
-        let pattern = format!("%{}%", trimmed_query);
+        // A user-typed `%` or `_` is a literal, not a wildcard: escape the LIKE
+        // metacharacters (and the escape char itself) so the short query means
+        // what it says instead of silently matching far more than requested.
+        let escaped = trimmed_query
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let pattern = format!("%{}%", escaped);
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
 
         let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![&pattern, &pattern];
@@ -492,7 +598,8 @@ fn search_files(
             FROM file_index f
             LEFT JOIN file_metadata m ON f.path = m.path
             WHERE (f.path REGEXP ?1 OR f.title REGEXP ?2) {}
-            LIMIT 50
+            ORDER BY f.rowid
+            LIMIT {limit} OFFSET {offset}
         ",
             cat_filter
         );
@@ -542,8 +649,8 @@ fn search_files(
             FROM file_index
             LEFT JOIN file_metadata m ON file_index.path = m.path
             WHERE file_index MATCH ?1 {}
-            ORDER BY rank
-            LIMIT 50
+            ORDER BY rank, file_index.rowid
+            LIMIT {limit} OFFSET {offset}
         ",
             cat_filter_fts
         );
@@ -605,8 +712,117 @@ fn search_files(
     Ok(final_results)
 }
 
+/// 2.7: total number of files matching `query` (optionally limited to a
+/// category). Search pages through `search_files`; this tells the UI the true
+/// match count so it can render "showing X of N" and enable load-more instead
+/// of silently truncating at the page size.
 #[tauri::command]
-fn get_index_stats(app_handle: AppHandle) -> Result<usize, String> {
+async fn search_count(
+    app_handle: AppHandle,
+    query: String,
+    category: String,
+) -> Result<i64, String> {
+    let trimmed_query = query.trim();
+    if trimmed_query.is_empty() {
+        return Ok(0);
+    }
+
+    let pool = app_handle.state::<db::DbPool>();
+    let conn = pool.get().map_err(|_| "DB pool error".to_string())?;
+
+    let is_regex = query.starts_with('/') && query.ends_with('/') && query.len() > 2;
+    let alnum_len = |term: &str| term.chars().filter(|c| c.is_alphanumeric()).count();
+    if alnum_len(trimmed_query) == 0 {
+        return Ok(0);
+    }
+    let trigram_capable = query.split_whitespace().any(|t| alnum_len(t) >= 3);
+    let short_query = !is_regex && !trigram_capable;
+
+    let count = if short_query {
+        let cat_filter = if category == "All" {
+            ""
+        } else {
+            "AND m.category = ?3"
+        };
+        let sql = format!(
+            "SELECT COUNT(*) FROM file_index f \
+             LEFT JOIN file_metadata m ON f.path = m.path \
+             WHERE (f.path LIKE ?1 ESCAPE '\\' OR f.title LIKE ?2 ESCAPE '\\') {}",
+            cat_filter
+        );
+        let escaped = trimmed_query
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let pattern = format!("%{}%", escaped);
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![&pattern, &pattern];
+        if category != "All" {
+            params_vec.push(&category);
+        }
+        stmt.query_row(rusqlite::params_from_iter(params_vec), |row| {
+            row.get::<_, i64>(0)
+        })
+        .map_err(|e| e.to_string())?
+    } else if is_regex {
+        let regex_pattern = &query[1..query.len() - 1];
+        let cat_filter = if category == "All" {
+            ""
+        } else {
+            "AND m.category = ?3"
+        };
+        let sql = format!(
+            "SELECT COUNT(*) FROM file_index f \
+             LEFT JOIN file_metadata m ON f.path = m.path \
+             WHERE (f.path REGEXP ?1 OR f.title REGEXP ?2) {}",
+            cat_filter
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![&regex_pattern, &regex_pattern];
+        if category != "All" {
+            params_vec.push(&category);
+        }
+        stmt.query_row(rusqlite::params_from_iter(params_vec), |row| {
+            row.get::<_, i64>(0)
+        })
+        .map_err(|e| e.to_string())?
+    } else {
+        let cat_filter_fts = if category == "All" {
+            ""
+        } else {
+            "AND m.category = ?2"
+        };
+        let sql = format!(
+            "SELECT COUNT(*) FROM file_index \
+             LEFT JOIN file_metadata m ON file_index.path = m.path \
+             WHERE file_index MATCH ?1 {}",
+            cat_filter_fts
+        );
+        let terms: Vec<String> = query
+            .split_whitespace()
+            .filter(|term| alnum_len(term) >= 3)
+            .map(|term| {
+                let safe_term = term.replace(['"', '*', '(', ')', '+', '-', '~'], "");
+                format!("\"{}\"", safe_term)
+            })
+            .collect();
+        let fts_query = terms.join(" AND ");
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![&fts_query];
+        if category != "All" {
+            params_vec.push(&category);
+        }
+        stmt.query_row(rusqlite::params_from_iter(params_vec), |row| {
+            row.get::<_, i64>(0)
+        })
+        .map_err(|e| e.to_string())?
+    };
+
+    Ok(count)
+}
+
+#[tauri::command]
+async fn get_index_stats(app_handle: AppHandle) -> Result<usize, String> {
     let pool = app_handle.state::<db::DbPool>();
     let conn = pool.get().map_err(|_| "DB pool error".to_string())?;
 
@@ -627,7 +843,7 @@ const BROWSE_SECTION_LIMIT: i64 = 10;
 const FREE_PICK_LIMIT: usize = 5;
 
 #[tauri::command]
-fn list_my_picks(app_handle: AppHandle) -> Result<Vec<SearchResult>, String> {
+async fn list_my_picks(app_handle: AppHandle) -> Result<Vec<SearchResult>, String> {
     let pool = app_handle.state::<db::DbPool>();
     let conn = pool.get().map_err(|_| "DB pool error".to_string())?;
 
@@ -664,7 +880,7 @@ fn list_my_picks(app_handle: AppHandle) -> Result<Vec<SearchResult>, String> {
 /// Re-adding an existing path is always allowed and is a no-op, so this cannot
 /// be used to lock a user out of their own saved items.
 #[tauri::command]
-fn add_my_pick(app_handle: AppHandle, pick: SearchResult) -> Result<(), String> {
+async fn add_my_pick(app_handle: AppHandle, pick: SearchResult) -> Result<(), String> {
     let unlimited = license::has_feature(&app_handle, license::FEATURE_UNLIMITED_PICKS);
     let pool = app_handle.state::<db::DbPool>();
     let conn = pool.get().map_err(|_| "DB pool error".to_string())?;
@@ -710,7 +926,7 @@ fn add_my_pick(app_handle: AppHandle, pick: SearchResult) -> Result<(), String> 
 }
 
 #[tauri::command]
-fn remove_my_pick(app_handle: AppHandle, id: i64) -> Result<(), String> {
+async fn remove_my_pick(app_handle: AppHandle, id: i64) -> Result<(), String> {
     let pool = app_handle.state::<db::DbPool>();
     let conn = pool.get().map_err(|_| "DB pool error".to_string())?;
     conn.execute("DELETE FROM my_picks WHERE id = ?1", rusqlite::params![id])
@@ -776,7 +992,10 @@ fn browse_category_files(
 // Browse files by category without a search word. "All" returns one section
 // per present category (newest preview), otherwise a single category's list.
 #[tauri::command]
-fn browse_files(app_handle: AppHandle, category: String) -> Result<Vec<BrowseSection>, String> {
+async fn browse_files(
+    app_handle: AppHandle,
+    category: String,
+) -> Result<Vec<BrowseSection>, String> {
     let pool = app_handle.state::<db::DbPool>();
     let conn = pool.get().map_err(|_| "DB pool error".to_string())?;
 
@@ -937,7 +1156,7 @@ struct DriveInfo {
 }
 
 #[tauri::command]
-fn get_system_drives() -> Result<Vec<DriveInfo>, String> {
+async fn get_system_drives() -> Result<Vec<DriveInfo>, String> {
     let mut drives = Vec::new();
 
     let disks = Disks::new_with_refreshed_list();
@@ -994,7 +1213,7 @@ struct DirEntry {
 }
 
 #[tauri::command]
-fn get_directories(path: String) -> Result<Vec<DirEntry>, String> {
+async fn get_directories(path: String) -> Result<Vec<DirEntry>, String> {
     let allowed = security::AllowedRoots::new(true);
     let valid_path = allowed
         .validate(&path)
@@ -1039,7 +1258,17 @@ fn path_is_indexed(
 }
 
 #[tauri::command]
-fn delete_file(app_handle: AppHandle, path: String) -> Result<String, String> {
+async fn delete_file(app_handle: AppHandle, path: String) -> Result<String, String> {
+    // Files indexed from a picked folder (Android, no All Files Access) are
+    // `content://` documents. Vexil only holds read permission for those trees
+    // and has no way to move them to Trash, so refuse clearly rather than
+    // deleting irrecoverably or failing with a cryptic path error.
+    if path.starts_with("content://") {
+        return Err(
+            "This file is inside a picked folder. Grant All Files Access to manage it.".to_string(),
+        );
+    }
+
     let allowed = security::AllowedRoots::new(true);
     let valid_path = allowed
         .validate(&path)
@@ -1076,11 +1305,16 @@ fn delete_file(app_handle: AppHandle, path: String) -> Result<String, String> {
 
     // Drop it from the index so it stops appearing in results and browse
     // sections. A restore puts the file back on disk, and the live file watcher
-    // picks it up again from there.
-    let _ = conn.execute("DELETE FROM file_index WHERE path = ?1", params![canonical]);
+    // picks it up again from there. Match both the canonical and raw forms, the
+    // same pair `path_is_indexed` used to allow the delete: the scanner may have
+    // stored either, so deleting only the canonical form would leave a ghost row.
     let _ = conn.execute(
-        "DELETE FROM file_metadata WHERE path = ?1",
-        params![canonical],
+        "DELETE FROM file_index WHERE path = ?1 OR path = ?2",
+        params![canonical, path],
+    );
+    let _ = conn.execute(
+        "DELETE FROM file_metadata WHERE path = ?1 OR path = ?2",
+        params![canonical, path],
     );
 
     Ok(format!("Moved \"{name}\" to Trash"))
@@ -1088,21 +1322,21 @@ fn delete_file(app_handle: AppHandle, path: String) -> Result<String, String> {
 
 /// Everything currently in the Trash panel, newest first.
 #[tauri::command]
-fn trash_items(app_handle: AppHandle) -> Result<Vec<trash::TrashItem>, String> {
+async fn trash_items(app_handle: AppHandle) -> Result<Vec<trash::TrashItem>, String> {
     let pool = app_handle.state::<db::DbPool>();
     trash::list(&pool)
 }
 
 /// Puts a trashed file back where it came from. Returns the path it landed on.
 #[tauri::command]
-fn restore_trashed_file(app_handle: AppHandle, id: i64) -> Result<String, String> {
+async fn restore_trashed_file(app_handle: AppHandle, id: i64) -> Result<String, String> {
     let pool = app_handle.state::<db::DbPool>();
     trash::restore(&pool, id)
 }
 
 /// Permanently deletes everything in the trash.
 #[tauri::command]
-fn empty_trash(app_handle: AppHandle) -> Result<String, String> {
+async fn empty_trash(app_handle: AppHandle) -> Result<String, String> {
     let pool = app_handle.state::<db::DbPool>();
     let removed = trash::empty(&pool)?;
     Ok(match removed {
@@ -1113,7 +1347,7 @@ fn empty_trash(app_handle: AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn open_in_explorer(app_handle: AppHandle, path: String) -> Result<String, String> {
+async fn open_in_explorer(app_handle: AppHandle, path: String) -> Result<String, String> {
     let allowed = security::AllowedRoots::new(true);
     let valid_path = allowed
         .validate(&path)
@@ -1138,7 +1372,7 @@ fn open_in_explorer(app_handle: AppHandle, path: String) -> Result<String, Strin
 /// desktop and iOS; `openResult` in the frontend prefers the bridge when it is
 /// present.
 #[tauri::command]
-fn open_file_external(app: AppHandle, path: String) -> Result<String, String> {
+async fn open_file_external(app: AppHandle, path: String) -> Result<String, String> {
     let valid_path = open_target_path(&app, &path)?;
     open_with_default_app(&app, &valid_path)
 }
@@ -1214,6 +1448,7 @@ fn exit_app(app_handle: AppHandle) {
 /// silent no-op: the window never opens and the user gets no explanation. Show
 /// a native error dialog on desktop (blocking_show is desktop-only), log on
 /// every platform, then exit with a non-zero code.
+#[cfg_attr(not(desktop), allow(unused_variables))]
 fn fatal_startup(app: &AppHandle, message: &str) -> ! {
     log::error!("Fatal startup error: {message}");
     #[cfg(desktop)]
@@ -1306,22 +1541,7 @@ pub fn run() {
                     // Match `open_db`: wait out a concurrent writer rather than
                     // surfacing SQLITE_BUSY to the user.
                     c.busy_timeout(std::time::Duration::from_secs(5))?;
-                    c.create_scalar_function(
-                        "REGEXP",
-                        2,
-                        rusqlite::functions::FunctionFlags::SQLITE_UTF8
-                            | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
-                        move |ctx| {
-                            let expr = ctx.get::<String>(0)?;
-                            let s = ctx.get::<String>(1)?;
-                            let re = regex::RegexBuilder::new(&expr)
-                                .size_limit(100_000)
-                                .dfa_size_limit(1_000_000)
-                                .build()
-                                .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
-                            Ok(re.is_match(&s))
-                        },
-                    )?;
+                    db::register_regexp(c)?;
                     Ok(())
                 });
             let pool = match r2d2::Pool::builder().max_size(4).build(manager) {
@@ -1484,6 +1704,7 @@ pub fn run() {
             get_platform,
             start_indexing,
             search_files,
+            search_count,
             browse_files,
             delete_file,
             trash_items,

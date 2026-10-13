@@ -75,6 +75,14 @@ tempfile = "3.27.0"
 [target."cfg(windows)".dependencies]
 winreg = "0.56.0"
 
+# Storage Access Framework (SAF) reading on Android. A picked folder is a
+# `content://` document tree, not a readable path, so the indexer drives the
+# App ContentResolver through `com.vexil.app.SafBridge` over JNI. `ndk-context`
+# is the handle tao installs at startup with the JavaVM and the app Context.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+
 # In-app updates are a desktop feature: mobile installs go through the store
 # or a sideloaded APK, so the updater plugin is never built for those targets.
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]

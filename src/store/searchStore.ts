@@ -45,6 +45,10 @@ interface SearchState {
   activeSizeFilter: string;
   activeDateFilter: string;
   selectedResult: SearchResult | null;
+  /** Server-side match total for the active query (2.7). */
+  searchTotal: number;
+  /** True while a load-more page is in flight. */
+  isLoadingMore: boolean;
   myPicks: SearchResult[];
   recentItems: SearchResult[];
   radarFiles: string[];
@@ -86,6 +90,7 @@ interface SearchState {
   openResult: (result: SearchResult | string) => void;
   openInExplorer: (path: string) => void;
   runSearch: (query: string, immediate?: boolean) => Promise<void>;
+  loadMore: () => Promise<void>;
   runBrowse: () => Promise<void>;
   handleCopyPath: () => void;
   handleDelete: () => Promise<void>;
@@ -110,6 +115,8 @@ export const useSearchStore = create<SearchState>()(
       activeSizeFilter: "Any Size",
       activeDateFilter: "Any Time",
       selectedResult: null,
+      searchTotal: 0,
+      isLoadingMore: false,
       myPicks: [],
       recentItems: [],
       radarFiles: [],
@@ -247,7 +254,7 @@ export const useSearchStore = create<SearchState>()(
           searchTimer = undefined;
         }
         if (!query.trim()) {
-          set({ results: [], isSearching: false });
+          set({ results: [], isSearching: false, searchTotal: 0 });
           void get().runBrowse();
           return;
         }
@@ -260,6 +267,21 @@ export const useSearchStore = create<SearchState>()(
             });
             if (searchSeq !== seq) return;
             set({ results, isSearching: false, selectedResult: null });
+            // 2.7: fetch the true match count so the UI can say "showing X of N"
+            // and offer load-more rather than silently capping at the page size.
+            try {
+              const total = await invoke<number>("search_count", {
+                query,
+                category: get().activeCategory,
+              });
+              if (searchSeq !== seq) return;
+              set({
+                searchTotal: typeof total === "number" ? total : results.length,
+              });
+            } catch (countError) {
+              console.error("Failed to count search results:", countError);
+              if (searchSeq === seq) set({ searchTotal: results.length });
+            }
           } catch (error) {
             if (searchSeq !== seq) return;
             console.error("Failed to search files:", error);
@@ -270,6 +292,32 @@ export const useSearchStore = create<SearchState>()(
           await run();
         } else {
           searchTimer = window.setTimeout(run, 250);
+        }
+      },
+      loadMore: async () => {
+        const { query, results, activeCategory, isLoadingMore, searchTotal } =
+          get();
+        if (!query.trim() || isLoadingMore || results.length >= searchTotal) {
+          return;
+        }
+        const seq = searchSeq;
+        set({ isLoadingMore: true });
+        try {
+          const more = await invoke<SearchResult[]>("search_files", {
+            query,
+            category: activeCategory,
+            limit: 50,
+            offset: results.length,
+          });
+          // A newer search supersedes this page; drop the stale response.
+          if (searchSeq !== seq) return;
+          set((state) => ({
+            results: [...state.results, ...(Array.isArray(more) ? more : [])],
+            isLoadingMore: false,
+          }));
+        } catch (error) {
+          console.error("Failed to load more results:", error);
+          set({ isLoadingMore: false });
         }
       },
       handleCopyPath: () => {

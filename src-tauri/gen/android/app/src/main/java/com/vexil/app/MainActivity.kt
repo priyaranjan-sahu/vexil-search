@@ -2,6 +2,7 @@ package com.vexil.app
 
 import android.Manifest
 import android.content.ActivityNotFoundException
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -16,10 +17,13 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.InputStream
 import java.net.URLConnection
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import org.json.JSONArray
 import org.json.JSONObject
 
 class MainActivity : TauriActivity() {
@@ -32,26 +36,26 @@ class MainActivity : TauriActivity() {
       emit("vexil:folder-pick-error", "{}", "User cancelled")
       return@registerForActivityResult
     }
-    val resolved = resolveTreePath(uri)
-    if (resolved == null) {
-      emit(
-        "vexil:folder-pick-error",
-        "{}",
-        "Could not resolve the selected folder into a readable path"
-      )
-      return@registerForActivityResult
-    }
     try {
       contentResolver.takePersistableUriPermission(
         uri,
         Intent.FLAG_GRANT_READ_URI_PERMISSION
       )
     } catch (ignored: SecurityException) {
-      // The grant may already be held or not required; path reads still work
-      // when all-files access is granted, so continue regardless.
+      // The grant may already be held or not required.
     }
-    val name = resolved.substringAfterLast('/').ifEmpty { resolved }
-    emit("vexil:folder-picked", JSONObject().put("path", resolved).put("name", name).toString(), null)
+    // The raw path is only a display label / removable-drive hint; indexing goes
+    // through the tree URI, so a provider with no filesystem path (cloud, etc.)
+    // is still usable.
+    val treeUri = uri.toString()
+    val resolved = resolveTreePath(uri)
+    val name = resolved?.substringAfterLast('/')?.takeIf { it.isNotEmpty() }
+      ?: treeDisplayName(uri)
+    emit(
+      "vexil:folder-picked",
+      JSONObject().put("path", resolved ?: treeUri).put("name", name).put("uri", treeUri).toString(),
+      null
+    )
   }
 
   private val legacyPermissionLauncher = registerForActivityResult(
@@ -63,6 +67,9 @@ class MainActivity : TauriActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+    // The Rust indexer reads picked folders through SafBridge over JNI, which
+    // needs an application Context for the ContentResolver.
+    SafBridge.appContext = applicationContext
   }
 
   override fun onWebViewCreate(webView: WebView) {
@@ -149,6 +156,14 @@ class MainActivity : TauriActivity() {
      */
     @JavascriptInterface
     fun openFile(path: String): String {
+      // SAF-indexed files are stored as `content://` URIs; the persisted tree
+      // permission is enough to hand them straight to a viewer.
+      if (path.startsWith("content://")) {
+        val uri = Uri.parse(path)
+        val label = path.substringAfterLast('/')
+        return openUri(uri, contentResolver.getType(uri) ?: mimeTypeFor(label), label)
+      }
+
       val file = File(path)
       if (!file.isFile) return "File not found: $path"
 
@@ -157,40 +172,52 @@ class MainActivity : TauriActivity() {
       } catch (_: IllegalArgumentException) {
         return "This file is outside the folders Vexil can share: $path"
       }
+      return openUri(uri, mimeTypeFor(file.name), file.name)
+    }
+  }
 
-      // MIME type must be on the Intent itself; Android resolves the handler from
-      // setDataAndType, and many players never register a bare content:// filter.
-      val intent = Intent(Intent.ACTION_VIEW)
-        .setDataAndType(uri, mimeTypeFor(file.name))
-        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+  /**
+   * Launches [uri] in whatever app handles [type].
+   *
+   * A raw `file://` intent is rejected on Android 7+ (FileUriExposedException),
+   * and a bare path has no scheme for ACTION_VIEW to match on, so callers pass
+   * a shareable `content://` uri with an explicit MIME type.
+   *
+   * @return "" on success, otherwise a human-readable error for the UI.
+   */
+  private fun openUri(uri: Uri, type: String, label: String): String {
+    // MIME type must be on the Intent itself; Android resolves the handler from
+    // setDataAndType, and many players never register a bare content:// filter.
+    val intent = Intent(Intent.ACTION_VIEW)
+      .setDataAndType(uri, type)
+      .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
 
-      var error = "No app on this device can open ${file.name}"
-      val done = CountDownLatch(1)
-      runOnUiThread {
+    var error = "No app on this device can open $label"
+    val done = CountDownLatch(1)
+    runOnUiThread {
+      try {
+        startActivity(intent)
+        error = ""
+      } catch (_: ActivityNotFoundException) {
+        // Some viewers only match content:// with no declared type.
         try {
-          startActivity(intent)
+          startActivity(
+            Intent(Intent.ACTION_VIEW)
+              .setData(uri)
+              .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+          )
           error = ""
         } catch (_: ActivityNotFoundException) {
-          // Some viewers only match content:// with no declared type.
-          try {
-            startActivity(
-              Intent(Intent.ACTION_VIEW)
-                .setData(uri)
-                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            )
-            error = ""
-          } catch (_: ActivityNotFoundException) {
-            // keep the original "no app" error
-          }
-        } catch (e: Exception) {
-          error = e.message ?: error
-        } finally {
-          done.countDown()
+          // keep the original "no app" error
         }
+      } catch (e: Exception) {
+        error = e.message ?: error
+      } finally {
+        done.countDown()
       }
-      if (!done.await(3, TimeUnit.SECONDS)) return "Timed out opening ${file.name}"
-      return error
     }
+    if (!done.await(3, TimeUnit.SECONDS)) return "Timed out opening $label"
+    return error
   }
 
   // Maps a SAF tree document id (e.g. "primary:Documents/Reports") to a real
@@ -207,6 +234,15 @@ class MainActivity : TauriActivity() {
       if (rel.isEmpty()) base else "$base/$rel"
     } else {
       if (rel.isEmpty()) "/storage/$volume" else "/storage/$volume/$rel"
+    }
+  }
+
+  // Best-effort folder name for a tree with no resolvable filesystem path
+  // (e.g. a cloud provider): the last segment of its document id, decoded.
+  private fun treeDisplayName(uri: Uri): String {
+    val docId = DocumentsContract.getTreeDocumentId(uri)
+    return Uri.decode(docId.substringAfterLast('/')).ifEmpty {
+      docId.substringAfter(':').ifEmpty { "Folder" }
     }
   }
 
@@ -270,5 +306,111 @@ class MainActivity : TauriActivity() {
       "rar" to "application/vnd.rar", "tar" to "application/x-tar",
       "gz" to "application/gzip", "apk" to "application/vnd.android.package-archive"
     )
+  }
+}
+
+/**
+ * JNI entry point for the Rust indexer. `src-tauri/src/saf.rs` loads this class
+ * through the app ClassLoader and calls the `@JvmStatic` methods to walk and
+ * read picked folders, which are `content://` document trees rather than
+ * filesystem paths.
+ *
+ * Every method is safe to call from the indexer's background thread and never
+ * throws: a failure is reported as an empty list / null so one unreadable folder
+ * cannot abort the scan.
+ */
+object SafBridge {
+  @Volatile
+  var appContext: Context? = null
+
+  @JvmStatic
+  fun hasAllFilesAccess(): Boolean =
+    Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager()
+
+  @JvmStatic
+  fun treeIsReadable(treeUri: String): Boolean {
+    val context = appContext ?: return false
+    return try {
+      val tree = Uri.parse(treeUri)
+      val docUri = DocumentsContract.buildDocumentUriUsingTree(
+        tree,
+        DocumentsContract.getTreeDocumentId(tree)
+      )
+      context.contentResolver.openInputStream(docUri)?.use { true } ?: false
+    } catch (_: Exception) {
+      false
+    }
+  }
+
+  /** One JSON array element per direct child of [documentUri] within [treeUri]. */
+  @JvmStatic
+  fun listChildren(treeUri: String, documentUri: String): String {
+    val context = appContext ?: return "[]"
+    val out = JSONArray()
+    try {
+      val tree = Uri.parse(treeUri)
+      val parent = Uri.parse(documentUri)
+      val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
+        tree,
+        DocumentsContract.getDocumentId(parent)
+      )
+      context.contentResolver.query(
+        childrenUri,
+        arrayOf(
+          DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+          DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+          DocumentsContract.Document.COLUMN_MIME_TYPE,
+          DocumentsContract.Document.COLUMN_SIZE,
+          DocumentsContract.Document.COLUMN_LAST_MODIFIED
+        ),
+        null, null, null
+      )?.use { cursor ->
+        while (cursor.moveToNext()) {
+          val id = cursor.getString(0) ?: continue
+          val mime = cursor.getString(2) ?: ""
+          out.put(
+            JSONObject()
+              .put("id", id)
+              .put("uri", DocumentsContract.buildDocumentUriUsingTree(tree, id).toString())
+              .put("name", cursor.getString(1) ?: "")
+              .put("mime", mime)
+              .put("size", if (cursor.isNull(3)) 0L else cursor.getLong(3))
+              .put("lastModified", if (cursor.isNull(4)) 0L else cursor.getLong(4))
+              .put("isDir", mime == DocumentsContract.Document.MIME_TYPE_DIR)
+          )
+        }
+      }
+    } catch (_: Exception) {
+      // Return whatever was collected; the Rust side logs a partial listing.
+    }
+    return out.toString()
+  }
+
+  /** Reads a whole document, or null when it is missing or over [maxBytes]. */
+  @JvmStatic
+  fun readBytes(documentUri: String, maxBytes: Long): ByteArray? {
+    val context = appContext ?: return null
+    return try {
+      context.contentResolver.openInputStream(Uri.parse(documentUri))?.use { input ->
+        readUpTo(input, maxBytes)
+      }
+    } catch (_: Exception) {
+      null
+    }
+  }
+
+  private fun readUpTo(input: InputStream, maxBytes: Long): ByteArray? {
+    val buffer = ByteArrayOutputStream()
+    val chunk = ByteArray(64 * 1024)
+    var total = 0L
+    while (true) {
+      val read = input.read(chunk)
+      if (read < 0) break
+      total += read
+      // Refuse rather than truncate: a half file would parse as garbage.
+      if (maxBytes > 0 && total > maxBytes) return null
+      buffer.write(chunk, 0, read)
+    }
+    return buffer.toByteArray()
   }
 }

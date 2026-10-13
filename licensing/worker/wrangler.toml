@@ -18,10 +18,27 @@ binding = "SEATS"
 id = "45425161165e4af6864875d80274c2e7"
 preview_id = "45425161165e4af6864875d80274c2e7"
 
+# Atomic seat + rate-limit + activation-code state. KV cannot do a
+# compare-and-set, so the Durable Object (one instance per key) is what makes
+# SEAT_LIMIT and the rate limits hold under concurrency. Deploying this binding
+# requires the migration below; existing KV seats are imported once on first use.
+[[durable_objects.bindings]]
+name = "GATE"
+class_name = "LicenseGate"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["LicenseGate"]
+
 [vars]
 # "paddle" | "buymeacoffee" | "auto" (auto detects the provider by signature
 # header; recommended as the default).
 WEBHOOK_PROVIDER = "auto"
+# Identifies the Paddle price/product that grants a Pro license. Matched against
+# each line item's price_id/product_id, or its product name (case-insensitive).
+# Comma-separated for multiple prices. Leave empty to fail closed: no Paddle
+# purchase can grant Pro.
+PADDLE_PRO_PRODUCT_ID = ""
 # Identifies the Buy Me a Coffee shop item that grants a Pro license. Matched
 # against each purchased item's id or title (case-insensitive). Comma-separated
 # for multiple items. Leave empty to fail closed: no BMAC purchase can grant Pro.
@@ -29,3 +46,10 @@ BMAC_PRO_PRODUCT_ID = ""
 # Set to "true" to also map active BMAC memberships to Pro licenses (started/
 # updated/cancelled/active webhooks). Disabled by default.
 BMAC_SUPPORT_MEMBERSHIPS = "false"
+# From: address for activation emails sent via Resend. Must be set (alongside the
+# RESEND_API_KEY secret) to enable email-verified activation; without both,
+# /activate refuses and only offline activation keys work.
+EMAIL_FROM = ""
+# Comma-separated browser origins allowed to call this worker cross-origin.
+# The app talks to the worker from Rust, so this is normally empty (no CORS).
+ALLOWED_ORIGINS = ""

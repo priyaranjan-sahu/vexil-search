@@ -31,6 +31,23 @@ pub fn open_db(path: &std::path::Path) -> SqlResult<Connection> {
     // connections, so without this a brief overlap is a hard error.
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
 
+    register_regexp(&conn)?;
+
+    Ok(conn)
+}
+
+/// Registers the `REGEXP` scalar function used by regex search.
+///
+/// SQLite invokes the function once per row, so compiling the pattern inside the
+/// callback recompiled it for every candidate row (O(rows) regex builds, the
+/// audit's 2.13). Memoise the compiled pattern per connection instead. The cache
+/// is cleared once it holds `REGEXP_CACHE_MAX` distinct patterns, which bounds
+/// memory for a long-lived connection while keeping the common single-pattern
+/// query at one build.
+pub fn register_regexp(conn: &Connection) -> SqlResult<()> {
+    const REGEXP_CACHE_MAX: usize = 64;
+    let cache: std::cell::RefCell<std::collections::HashMap<String, regex::Regex>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
     conn.create_scalar_function(
         "REGEXP",
         2,
@@ -39,16 +56,25 @@ pub fn open_db(path: &std::path::Path) -> SqlResult<Connection> {
         move |ctx| {
             let expr = ctx.get::<String>(0)?;
             let s = ctx.get::<String>(1)?;
-            let re = regex::RegexBuilder::new(&expr)
-                .size_limit(100_000)
-                .dfa_size_limit(1_000_000)
-                .build()
-                .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
+            let cached = cache.borrow().get(&expr).cloned();
+            let re = match cached {
+                Some(re) => re,
+                None => {
+                    if cache.borrow().len() >= REGEXP_CACHE_MAX {
+                        cache.borrow_mut().clear();
+                    }
+                    let re = regex::RegexBuilder::new(&expr)
+                        .size_limit(100_000)
+                        .dfa_size_limit(1_000_000)
+                        .build()
+                        .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
+                    cache.borrow_mut().insert(expr.clone(), re.clone());
+                    re
+                }
+            };
             Ok(re.is_match(&s))
         },
-    )?;
-
-    Ok(conn)
+    )
 }
 
 pub fn setup_db(app_dir: &PathBuf) -> SqlResult<Connection> {

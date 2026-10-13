@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import App from "./App";
 import { useSearchStore, SearchResult } from "./store/searchStore";
+import { useLicenseStore } from "./store/licenseStore";
 
 // Mock Tauri APIs
 vi.mock("@tauri-apps/api/core", () => ({
@@ -92,7 +93,15 @@ describe("App Component", () => {
       value: { writeText },
       configurable: true,
     });
-    useSearchStore.setState({ selectedResult });
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === "search_files") return Promise.resolve([selectedResult]);
+      return Promise.resolve(42);
+    });
+    useSearchStore.setState({
+      selectedResult,
+      results: [selectedResult],
+      query: "report",
+    });
     render(<App />);
     const input = screen.getByPlaceholderText(/search documents, apps, files/i);
 
@@ -185,6 +194,64 @@ describe("App Component", () => {
     expect(screen.getAllByText("medium.mp3").length).toBeGreaterThan(0);
     expect(screen.queryByText("small.mp3")).not.toBeInTheDocument();
     expect(screen.queryByText("large.mp3")).not.toBeInTheDocument();
+  });
+
+  it("clears a selection hidden by a size filter (2.8)", async () => {
+    const small: SearchResult = {
+      ...selectedResult,
+      id: 11,
+      title: "small.txt",
+      size: 1024,
+    };
+    const big: SearchResult = {
+      ...selectedResult,
+      id: 10,
+      title: "big.zip",
+      size: 500 * 1024 * 1024,
+    };
+    const rows = [big, small];
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === "search_files") return Promise.resolve(rows);
+      return Promise.resolve(42);
+    });
+    useSearchStore.setState({
+      query: "report",
+      results: rows,
+      selectedResult: big,
+      activeSizeFilter: "Any Size",
+    });
+    render(<App />);
+    await flushEffects();
+
+    const sizeSelect = screen.getByDisplayValue("Any Size");
+    fireEvent.change(sizeSelect, { target: { value: "Small (< 1MB)" } });
+    await flushEffects();
+
+    expect(useSearchStore.getState().selectedResult).toBeNull();
+  });
+
+  it("disables background running when the licence lacks the feature (2.16)", async () => {
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === "get_license_status")
+        return Promise.resolve({
+          pro: false,
+          plan: "free",
+          features: [],
+          userId: null,
+          issuedAt: null,
+          expiresAt: null,
+          reason: "none",
+          renewable: false,
+        });
+      if (cmd === "get_entitlements") return Promise.resolve([]);
+      return Promise.resolve(42);
+    });
+    useSearchStore.setState({ runInBackground: true, query: "" });
+    useLicenseStore.setState({ status: null, entitlements: [] });
+    render(<App />);
+    await flushEffects();
+    await flushEffects();
+    expect(useSearchStore.getState().runInBackground).toBe(false);
   });
 
   it("context-menu Copy Path copies the row path", async () => {

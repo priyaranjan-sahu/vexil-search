@@ -1,11 +1,15 @@
 export interface MobileRoot {
   path: string;
   name: string;
+  /** Android: the Storage Access Framework tree URI a picked folder was chosen from. */
+  uri?: string;
 }
 
 export interface FolderPickedDetail {
   path: string;
   name: string;
+  /** Android: the SAF tree URI to persist and index through. */
+  uri?: string;
 }
 
 export interface FolderPickErrorDetail {

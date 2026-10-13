@@ -187,7 +187,8 @@ export const SettingsTab = ({
                 </button>
                 <p className="mob-hint">
                   Use All Files Access for instant full-device search, or the
-                  folder picker to index a specific folder.
+                  folder picker to index a specific folder without any extra
+                  permission.
                 </p>
               </>
             )}

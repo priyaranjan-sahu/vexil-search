@@ -15,7 +15,7 @@ import { openExternalUrl } from "./lib/openExternal";
 import { useUpdateInfo, applyUpdate } from "./lib/updates";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { useSearchStore, SearchResult, Theme } from "./store/searchStore";
-import { useLicenseStore } from "./store/licenseStore";
+import { useLicenseStore, FEATURES } from "./store/licenseStore";
 import { useThemeSync } from "./lib/useTheme";
 import { getFilteredResults as filterResults } from "./lib/resultFilters";
 
@@ -60,6 +60,9 @@ function App() {
     setActiveMenu,
     selectedResult,
     setSelectedResult,
+    searchTotal,
+    isLoadingMore,
+    loadMore,
     radarFiles,
     setRadarFiles,
     radarToast,
@@ -197,12 +200,24 @@ function App() {
       .catch(() => setAppVersion(""));
   }, []);
 
-  // Sync background running state to backend on mount
+  // Sync background running state to backend on mount.
+  // 2.16: never push a paid feature while the loaded licence does not grant it,
+  // so a lapsed subscription can't keep running in the background. We wait for
+  // the licence status to resolve before enforcing, so a slow refresh doesn't
+  // wrongly disable a paying user.
   useEffect(() => {
+    if (
+      licenseStatus &&
+      runInBackground &&
+      !entitlements.includes(FEATURES.background)
+    ) {
+      setRunInBackground(false);
+      return;
+    }
     invoke("set_run_in_background", { enable: runInBackground }).catch(
       console.error,
     );
-  }, [runInBackground]);
+  }, [runInBackground, licenseStatus, entitlements, setRunInBackground]);
 
   // Index on mount only; read the latest dirs from the store so checkbox
   // changes in Settings update the next scan without re-running this effect.
@@ -478,6 +493,26 @@ function App() {
       ),
     [filteredBrowseSections],
   );
+
+  // 2.8: size/date filters are applied client-side, so a selected row can be
+  // filtered out of view while `selectedResult` still points at it. Clear the
+  // selection when it is no longer visible and gate the toolbar actions on
+  // visibility so Delete can never act on a file the user cannot see.
+  const visibleSelection = useMemo(() => {
+    if (!selectedResult) return null;
+    const isSelected = (r: SearchResult) => r.id === selectedResult.id;
+    const inResults = filteredResults.some(isSelected);
+    const inBrowse = filteredBrowseSections.some((section) =>
+      section.files.some(isSelected),
+    );
+    return inResults || inBrowse ? selectedResult : null;
+  }, [selectedResult, filteredResults, filteredBrowseSections]);
+
+  useEffect(() => {
+    if (selectedResult && !visibleSelection) {
+      setSelectedResult(null);
+    }
+  }, [selectedResult, visibleSelection, setSelectedResult]);
 
   return (
     <div className="container">
@@ -867,8 +902,8 @@ function App() {
           <div className="toolbar-group">
             <button
               className="tool-btn"
-              disabled={!selectedResult}
-              onClick={() => selectedResult && openResult(selectedResult)}
+              disabled={!visibleSelection}
+              onClick={() => visibleSelection && openResult(visibleSelection)}
             >
               <svg
                 viewBox="0 0 24 24"
@@ -884,7 +919,7 @@ function App() {
             </button>
             <button
               className="tool-btn"
-              disabled={!selectedResult}
+              disabled={!visibleSelection}
               onClick={handleCopyPath}
             >
               <svg
@@ -900,7 +935,7 @@ function App() {
             </button>
             <button
               className="tool-btn"
-              disabled={!selectedResult}
+              disabled={!visibleSelection}
               onClick={handleDelete}
             >
               <svg
@@ -952,6 +987,12 @@ function App() {
           <>
             {filteredResults.length} items found
             {activeCategory !== "All" && <> · Showing {activeCategory}</>}
+            {searchTotal > results.length && (
+              <>
+                {" "}
+                · showing {results.length} of {searchTotal}
+              </>
+            )}
           </>
         )}
         <span style={{ marginLeft: "16px", color: "var(--text-secondary)" }}>
@@ -987,9 +1028,13 @@ function App() {
           filteredResults={filteredResults}
           browseSections={filteredBrowseSections}
           isBrowsing={browsing}
-          selectedResult={selectedResult}
+          selectedResult={visibleSelection}
           setSelectedResult={setSelectedResult}
           setContextMenu={setContextMenu}
+          searchTotal={searchTotal}
+          hasMore={searchTotal > results.length}
+          isLoadingMore={isLoadingMore}
+          onLoadMore={loadMore}
         />
 
         {/* Right Sidebar */}

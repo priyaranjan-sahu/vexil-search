@@ -157,6 +157,10 @@ export const ResultsTable = ({
   setContextMenu,
   browseSections = [],
   isBrowsing = false,
+  searchTotal = 0,
+  hasMore = false,
+  isLoadingMore = false,
+  onLoadMore,
 }: {
   filteredResults: SearchResult[];
   selectedResult: SearchResult | null;
@@ -168,6 +172,12 @@ export const ResultsTable = ({
   }) => void;
   browseSections?: BrowseSection[];
   isBrowsing?: boolean;
+  /** Server-side total for the active query (2.7). */
+  searchTotal?: number;
+  /** True while more server pages remain beyond the loaded rows. */
+  hasMore?: boolean;
+  isLoadingMore?: boolean;
+  onLoadMore?: () => void;
 }) => {
   const isSearching = useSearchStore((state) => state.isSearching);
 
@@ -177,7 +187,11 @@ export const ResultsTable = ({
   const virtualizer = useVirtualizer({
     count: filteredResults.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => 48, // rows are ~40px; slight over-estimate avoids scroll jitter
+    // 2.10: rows render at ~36px (8px padding + ~1rem line + border), so measure
+    // each row instead of relying on a fixed estimate that drifts from reality.
+    estimateSize: () => 36,
+    // eslint-disable-next-line security/detect-object-injection -- index is the virtualizer's own integer over a local array
+    getItemKey: (index) => filteredResults[index]?.id ?? index,
     overscan: 5,
   });
 
@@ -315,6 +329,8 @@ export const ResultsTable = ({
                   return (
                     <tr
                       key={result.id}
+                      data-index={virtualRow.index}
+                      ref={virtualizer.measureElement}
                       className={
                         selectedResult?.id === result.id ? "selected" : ""
                       }
@@ -357,6 +373,19 @@ export const ResultsTable = ({
                   )}
               </tbody>
             </table>
+            {hasMore && onLoadMore && (
+              <div style={{ padding: "12px", textAlign: "center" }}>
+                <button
+                  className="tool-btn"
+                  onClick={onLoadMore}
+                  disabled={isLoadingMore}
+                >
+                  {isLoadingMore
+                    ? "Loading…"
+                    : `Load more (${filteredResults.length} of ${searchTotal})`}
+                </button>
+              </div>
+            )}
           </div>
         ) : (
           <div className="empty-state">

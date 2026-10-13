@@ -89,9 +89,9 @@ export const MobileApp = () => {
   }, [setIndexingProgress, setToast]);
 
   const addRootAndReindex = useCallback(
-    async (path: string, name?: string) => {
+    async (path: string, name?: string, uri?: string) => {
       try {
-        await invoke("add_mobile_root", { path, name });
+        await invoke("add_mobile_root", { path, name, uri });
         setToast(`Added folder: ${name ?? path}`);
         await refreshRoots();
         void triggerIndexing();
@@ -125,16 +125,15 @@ export const MobileApp = () => {
       const p = await getPlatform();
       if (disposed) return;
       setPlatform(p);
-      let canIndex = true;
       if (p === "android") {
-        const granted = hasAllFilesAccess();
-        setAllFilesAccess(granted);
-        canIndex = granted;
+        // All Files Access widens the scan to raw paths, but it is not required:
+        // picked folders are indexed through the Storage Access Framework.
+        setAllFilesAccess(hasAllFilesAccess());
         unsubs.push(
           onNativeEvent<FolderPickedDetail>(
             ANDROID_EVENTS.folderPicked,
             (d) => {
-              void addRootAndReindex(d.path, d.name);
+              void addRootAndReindex(d.path, d.name, d.uri);
             },
           ),
           onNativeEvent<FolderPickErrorDetail>(
@@ -145,14 +144,14 @@ export const MobileApp = () => {
             ANDROID_EVENTS.allFilesAccess,
             (d) => {
               setAllFilesAccess(d.granted);
-              // First scan on Android can only happen once access is granted:
-              // the indexer walks raw paths, which return nothing without it.
-              if (d.granted) void triggerIndexing();
+              // Access changes switch the indexer between raw paths and SAF, so
+              // rescan either way.
+              void triggerIndexing();
             },
           ),
         );
       }
-      if (canIndex) void triggerIndexing();
+      void triggerIndexing();
     };
     void boot();
 
@@ -194,8 +193,8 @@ export const MobileApp = () => {
     setToast,
   ]);
 
-  // Initial stats + roots. Indexing is kicked off from `boot` (and, on Android,
-  // only once All Files Access is confirmed) so we never scan an empty device.
+  // Initial stats + roots. Indexing is kicked off from `boot` so the first scan
+  // covers both raw paths (when permitted) and any picked SAF folders.
   useEffect(() => {
     void refreshStats();
     // The setter runs after an awaited invoke, not synchronously in the effect.

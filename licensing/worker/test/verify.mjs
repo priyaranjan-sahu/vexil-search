@@ -4,6 +4,7 @@
 // Run inside the worker dir:  node test/verify.mjs
 
 import worker from "../src/index.js";
+import { FakeGate, FakeKV } from "./helpers.mjs";
 
 let failures = 0;
 function check(name, cond) {
@@ -12,18 +13,6 @@ function check(name, cond) {
     failures += 1;
   } else {
     console.log(`ok: ${name}`);
-  }
-}
-
-class FakeKV {
-  constructor(initial = {}) {
-    this.map = new Map(Object.entries(initial));
-  }
-  async get(key) {
-    return this.map.has(key) ? this.map.get(key) : null;
-  }
-  async put(key, value) {
-    this.map.set(key, value);
   }
 }
 
@@ -37,6 +26,7 @@ function makeEnv(customer, seats) {
     SEATS: new FakeKV(
       seats ? { "seats:u@vexil.app": JSON.stringify(seats) } : {},
     ),
+    GATE: new FakeGate(),
   };
 }
 

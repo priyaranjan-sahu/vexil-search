@@ -12,6 +12,11 @@ use crate::license;
 pub struct MobileRoot {
     pub path: String,
     pub name: String,
+    /// Android only: the Storage Access Framework tree URI this folder was
+    /// picked from (`content://…/tree/…`). Present for folders chosen through
+    /// the system picker; absent for defaults and iOS/desktop roots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uri: Option<String>,
 }
 
 const ROOTS_FILE: &str = "mobile-roots.json";
@@ -31,12 +36,18 @@ pub fn default_roots(app: &AppHandle) -> Vec<MobileRoot> {
 
     #[cfg(target_os = "android")]
     {
-        let external = PathBuf::from("/storage/emulated/0");
-        if external.is_dir() {
-            roots.push(MobileRoot {
-                path: external.to_string_lossy().into_owned(),
-                name: "Phone storage".to_string(),
-            });
+        // Shared storage is only readable as a raw path with All Files Access.
+        // Without it the volume is offered through picked SAF folders instead,
+        // so don't advertise a default root that would silently index nothing.
+        if android_all_files_ok() {
+            let external = PathBuf::from("/storage/emulated/0");
+            if external.is_dir() {
+                roots.push(MobileRoot {
+                    path: external.to_string_lossy().into_owned(),
+                    name: "Phone storage".to_string(),
+                    uri: None,
+                });
+            }
         }
     }
 
@@ -46,6 +57,7 @@ pub fn default_roots(app: &AppHandle) -> Vec<MobileRoot> {
             roots.push(MobileRoot {
                 path: docs.to_string_lossy().into_owned(),
                 name: "App Documents".to_string(),
+                uri: None,
             });
         }
     }
@@ -56,12 +68,14 @@ pub fn default_roots(app: &AppHandle) -> Vec<MobileRoot> {
             roots.push(MobileRoot {
                 path: d.to_string_lossy().into_owned(),
                 name: "Documents".to_string(),
+                uri: None,
             });
         }
         if let Some(d) = dirs::download_dir() {
             roots.push(MobileRoot {
                 path: d.to_string_lossy().into_owned(),
                 name: "Downloads".to_string(),
+                uri: None,
             });
         }
     }
@@ -124,10 +138,27 @@ fn path_is_removable(path: &Path) -> bool {
     }
 }
 
-/// Paths that will be scanned by [`start_indexing`]: platform defaults plus
-/// the roots the user picked (persisted across restarts).
+/// Whether shared storage may be read as raw filesystem paths. Desktop and iOS
+/// have no such restriction; on Android it is the All Files Access permission.
+fn android_all_files_ok() -> bool {
+    #[cfg(target_os = "android")]
+    {
+        crate::saf::has_all_files_access()
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        true
+    }
+}
+
+/// Roots to index as real filesystem paths: platform defaults plus the folders
+/// the user picked, minus any that must go through SAF instead.
+///
+/// On Android without All Files Access, a picked folder's raw path is
+/// unreadable, so it is left to [`saf_scan_roots`] rather than indexed here as
+/// an empty walk.
 #[cfg_attr(not(mobile), allow(dead_code))]
-pub fn scan_roots(app: &AppHandle) -> Vec<PathBuf> {
+pub fn raw_scan_roots(app: &AppHandle) -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = default_roots(app)
         .into_iter()
         .filter(|r| Path::new(&r.path).is_dir())
@@ -140,9 +171,14 @@ pub fn scan_roots(app: &AppHandle) -> Vec<PathBuf> {
     // `start_indexing` never applies on mobile, because `custom_dirs` is only
     // ever populated by the desktop directory tree.
     let can_index_removable = license::has_feature(app, license::FEATURE_REMOVABLE_DRIVES);
+    let all_files = android_all_files_ok();
 
     for configured in load_roots(app) {
-        let path = PathBuf::from(configured.path);
+        // A picked folder is scanned from its tree URI unless raw reads work.
+        if configured.uri.is_some() && !all_files {
+            continue;
+        }
+        let path = PathBuf::from(&configured.path);
         if !path.is_dir() || roots.contains(&path) {
             continue;
         }
@@ -157,6 +193,54 @@ pub fn scan_roots(app: &AppHandle) -> Vec<PathBuf> {
     }
 
     roots
+}
+
+/// Picked folders to index through Android's Storage Access Framework.
+///
+/// Empty unless raw reads are unavailable: with All Files Access the same
+/// folders are already covered by [`raw_scan_roots`], and indexing them twice
+/// would duplicate every row.
+#[cfg(target_os = "android")]
+pub fn saf_scan_roots(app: &AppHandle) -> Vec<MobileRoot> {
+    if android_all_files_ok() {
+        return Vec::new();
+    }
+    let can_index_removable = license::has_feature(app, license::FEATURE_REMOVABLE_DRIVES);
+    load_roots(app)
+        .into_iter()
+        .filter(|r| r.uri.is_some())
+        .filter(|r| {
+            if path_is_removable(Path::new(&r.path)) && !can_index_removable {
+                log::warn!(
+                    "Skipping removable SAF root without a Pro licence: {}",
+                    r.path
+                );
+                false
+            } else {
+                true
+            }
+        })
+        .collect()
+}
+
+/// Walks each SAF root and feeds index rows to `emit`. Returns when the walk is
+/// done or `emit` returns `false` (cancellation).
+#[cfg(target_os = "android")]
+pub fn scan_saf_roots(
+    app: &AppHandle,
+    roots: &[MobileRoot],
+    mut emit: impl FnMut(crate::IndexRow) -> bool,
+) {
+    let _ = app;
+    for root in roots {
+        let Some(tree_uri) = root.uri.as_deref() else {
+            continue;
+        };
+        match crate::saf::walk_tree(tree_uri, &mut emit) {
+            Ok(()) => log::debug!("SAF scan finished for '{}'", root.name),
+            Err(e) => log::warn!("SAF scan failed for '{}': {e}", root.name),
+        }
+    }
 }
 
 #[tauri::command]
@@ -175,13 +259,26 @@ pub fn add_mobile_root(
     app: AppHandle,
     path: String,
     name: Option<String>,
+    uri: Option<String>,
 ) -> Result<Vec<MobileRoot>, String> {
     let target = PathBuf::from(&path);
-    if !target.exists() {
-        return Err(format!("Folder does not exist or is not readable: {path}"));
-    }
-    if !target.is_dir() {
-        return Err(format!("Not a folder: {path}"));
+    if uri.is_some() {
+        // Android folders chosen through the picker are reached via their SAF
+        // tree URI; the raw path may not exist or be readable, so trust the
+        // persisted permission instead of a filesystem check.
+        #[cfg(target_os = "android")]
+        {
+            if !crate::saf::tree_is_readable(uri.as_deref().unwrap_or_default()) {
+                return Err(format!("Folder is not readable: {path}"));
+            }
+        }
+    } else {
+        if !target.exists() {
+            return Err(format!("Folder does not exist or is not readable: {path}"));
+        }
+        if !target.is_dir() {
+            return Err(format!("Not a folder: {path}"));
+        }
     }
 
     if path_is_removable(&target) && !license::has_feature(&app, license::FEATURE_REMOVABLE_DRIVES)
@@ -202,6 +299,7 @@ pub fn add_mobile_root(
     let entry = MobileRoot {
         path,
         name: display,
+        uri,
     };
     let mut roots = load_roots(&app);
     if !roots.contains(&entry) {
@@ -278,7 +376,12 @@ fn add_root_for_path(app: &AppHandle, path: &Path) -> Result<(), String> {
     if !target.is_dir() {
         return Ok(());
     }
-    add_mobile_root(app.clone(), target.to_string_lossy().into_owned(), None)?;
+    add_mobile_root(
+        app.clone(),
+        target.to_string_lossy().into_owned(),
+        None,
+        None,
+    )?;
     Ok(())
 }
 

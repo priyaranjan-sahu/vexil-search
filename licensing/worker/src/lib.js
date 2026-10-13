@@ -62,23 +62,10 @@ export function constantTimeEqual(a, b) {
   return diff === 0;
 }
 
-// Fixed-window rate limiter backed by KV.
-//
-// The counter is per (key, window) and TTL'd, so it self-cleans without a cron.
-// It is not perfectly atomic under concurrency (a burst can read the same
-// count twice), but it is enough to stop the abuse this exists for: scraping
-// `/activate` to enumerate paying emails, or filling a victim's device seats
-// from a script. Returns `true` when the caller is over budget.
-export async function isRateLimited(kv, key, limit, windowSecs) {
-  const bucket = Math.floor(Date.now() / 1000 / windowSecs);
-  const bucketKey = `rl:${key}:${bucket}`;
-  const current = Number((await kv.get(bucketKey)) || "0");
-  if (current >= limit) return true;
-  await kv.put(bucketKey, String(current + 1), {
-    expirationTtl: windowSecs * 2,
-  });
-  return false;
-}
+// Fixed-window rate limiting lives in the LicenseGate Durable Object (see
+// gate.js). KV was the obvious home, but it has no atomic increment and is
+// eventually consistent, so a burst could slip past the limit; a Durable Object
+// processes one request at a time per key, which makes the counter exact.
 
 // Paddle Billing webhook verification.
 // Header `Paddle-Signature: ts=<ts>;h1=<hex>` where the HMAC-SHA256 of the
@@ -149,26 +136,93 @@ export async function verifyBmcWebhook(secret, rawBody, signatureHeader) {
   return constantTimeEqual(expected, signatureHeader.trim().toLowerCase());
 }
 
+// Paddle event types that can *grant* (or keep) Pro. Everything else in
+// PADDLE_HANDLED_TYPES only revokes.
+export const PADDLE_GRANTING_TYPES = Object.freeze([
+  "transaction.completed",
+  "subscription.activated",
+  "subscription.updated",
+]);
+
+// Paddle subscription statuses that mean "the customer may use Pro". Anything
+// else (canceled, past_due, paused, ...) revokes. `null` status means the
+// payload carried no usable status, so the caller should not change state.
+export function subscriptionActive(status) {
+  if (status == null) return null;
+  const s = String(status).toLowerCase();
+  if (s === "active" || s === "trialing") return true;
+  if (s === "canceled" || s === "past_due" || s === "paused") return false;
+  return null;
+}
+
+// True when a Paddle transaction/subscription carries a line item matching the
+// configured product spec (price/product id, or product name/title).
+//
+// Paddle Billing marks *every* purchase on the account with a
+// `transaction.completed` / `subscription.*` event, so without this check any
+// charge — a different product, a $1 test item — would mint a Pro license.
+// Matching against the numeric id is preferred; the name is a fallback for
+// sellers who only know the product title. Empty spec fails closed.
+export function paddleMatchesProduct(event, productSpec) {
+  const entries = parseProductSpec(productSpec);
+  if (entries.length === 0) return false; // fail closed: nothing can grant Pro
+  const items = Array.isArray(event?.data?.items) ? event.data.items : [];
+  return items.some((item) => {
+    const ids = [
+      item?.price_id,
+      item?.price?.id,
+      item?.price?.product_id,
+      item?.product_id,
+    ]
+      .filter(Boolean)
+      .map(String);
+    const names = [
+      item?.price?.product?.name,
+      item?.price?.name,
+      item?.product?.name,
+    ].filter(Boolean);
+    const idMatch = entries.some((e) => ids.includes(e));
+    const nameMatch = entries.some((e) =>
+      names.some((n) => String(n).toLowerCase() === e.toLowerCase()),
+    );
+    return idMatch || nameMatch;
+  });
+}
+
 // Maps a Paddle Billing webhook event to a customer-record update.
 // Returns { email, active, recurring } or null when nothing changed.
-export function paddleEventState(event) {
+//
+// `opts.proProductId` is the allow-list of price/product ids (or names) that
+// grant Pro; a granting event for any other product is ignored (fail closed
+// when unset). Subscription events are driven by `data.status` rather than the
+// event type, so a `subscription.updated` that reports `canceled` revokes
+// instead of re-granting.
+export function paddleEventState(event, opts = {}) {
   const type = event.event_type || "";
   const data = event.data || {};
   const email = normalizeEmail(data.customer?.email);
   if (!email) return null;
 
-  const items = event.data?.items;
+  const items = data.items;
   const price = Array.isArray(items)
     ? items.map((i) => i.price).find((p) => p?.billing_cycle?.interval)
     : null;
   const recurring = price ? price.billing_cycle.interval : null;
 
-  if (
-    type === "transaction.completed" ||
-    type === "subscription.activated" ||
-    type === "subscription.updated"
-  ) {
+  if (type === "transaction.completed") {
+    if (!paddleMatchesProduct(event, opts.proProductId)) return null;
     return { email, active: true, recurring };
+  }
+  if (type === "subscription.activated" || type === "subscription.updated") {
+    if (!paddleMatchesProduct(event, opts.proProductId)) return null;
+    const active = subscriptionActive(data.status);
+    if (active == null) {
+      // No usable status: an activation implies active; an update is a no-op.
+      return type === "subscription.activated"
+        ? { email, active: true, recurring }
+        : null;
+    }
+    return { email, active, recurring };
   }
   if (
     type === "subscription.canceled" ||
@@ -203,9 +257,21 @@ export const PADDLE_HANDLED_TYPES = Object.freeze([
 // delivered, nothing retries, and without this distinction that is silent.
 export function unmappedReason(event, provider, opts = {}) {
   if (provider === "paddle") {
-    return PADDLE_HANDLED_TYPES.includes(event?.event_type || "")
-      ? "unparsable_handled_event"
-      : "unhandled_event_type";
+    const type = event?.event_type || "";
+    if (!PADDLE_HANDLED_TYPES.includes(type)) return "unhandled_event_type";
+    // A handled event we could not attribute to a paying customer is the
+    // expensive case. Missing email means we genuinely could not read it; a
+    // product mismatch (or an unconfigured allow-list) means it is simply not
+    // our product, which is expected and must stay quiet.
+    const email = normalizeEmail(event?.data?.customer?.email);
+    if (!email) return "unparsable_handled_event";
+    if (
+      PADDLE_GRANTING_TYPES.includes(type) &&
+      !paddleMatchesProduct(event, opts.paddleProProductId)
+    ) {
+      return "product_not_configured_or_mismatch";
+    }
+    return "no_state_change";
   }
   const type = event?.type || "";
   const handled =
@@ -216,17 +282,20 @@ export function unmappedReason(event, provider, opts = {}) {
 }
 
 // Parses a comma-separated list of product id/title matchers into entries.
-export function parseBmcProductSpec(spec) {
+export function parseProductSpec(spec) {
   return String(spec || "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
 }
 
+// Backwards-compatible alias: BMAC and Paddle share the same spec format.
+export const parseBmcProductSpec = parseProductSpec;
+
 // True when one of the purchased `extras` items matches the product spec.
 // Matches against the item's numeric id OR its title (case-insensitive).
 export function bmcMatchesProduct(data, productSpec) {
-  const entries = parseBmcProductSpec(productSpec);
+  const entries = parseProductSpec(productSpec);
   if (entries.length === 0) return false; // fail closed: nothing can grant Pro
   const items = Array.isArray(data?.extras) ? data.extras : [];
   return items.some((item) => {
@@ -249,7 +318,7 @@ export function bmcEventState(event, opts = {}) {
   const email = normalizeEmail(data.supporter_email);
   if (!email) return null;
 
-  const productSpec = parseBmcProductSpec(opts.proProductId);
+  const productSpec = parseProductSpec(opts.proProductId);
 
   if (type === "extra_purchase.created") {
     if (!bmcMatchesProduct(data, productSpec)) return null;
@@ -278,4 +347,18 @@ export function bmcEventState(event, opts = {}) {
 export function intervalDays(interval) {
   if (interval === "year") return 365;
   return 30; // "month" or anything else -> a safe default term
+}
+
+// How long an emailed activation code stays valid.
+export const EMAIL_CODE_TTL_SECS = 600;
+// How many wrong guesses a single code tolerates before it is burned. A 6-digit
+// code has 1e6 possibilities; 5 tries keeps online brute force hopeless.
+export const EMAIL_CODE_MAX_ATTEMPTS = 5;
+
+// A fresh 6-digit activation code, drawn from a CSPRNG. Zero-padded so every
+// code has the same length (and therefore a constant-time compare).
+export function generateEmailCode() {
+  const buf = new Uint32Array(1);
+  crypto.getRandomValues(buf);
+  return String(buf[0] % 1_000_000).padStart(6, "0");
 }

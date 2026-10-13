@@ -119,3 +119,63 @@ describe("stale selection is cleared on new result sets", () => {
     expect(useSearchStore.getState().selectedResult).toBeNull();
   });
 });
+
+describe("search pagination (2.7)", () => {
+  it("records the true match total from search_count", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "search_files") return [pick(1)];
+      if (cmd === "search_count") return 120;
+      return undefined;
+    });
+    const useSearchStore = await freshStore();
+
+    await useSearchStore.getState().runSearch("query", true);
+
+    expect(useSearchStore.getState().results.map((r) => r.id)).toEqual([1]);
+    expect(useSearchStore.getState().searchTotal).toBe(120);
+  });
+
+  it("appends the next page using the loaded count as the offset", async () => {
+    invoke.mockImplementation(
+      async (cmd: string, args: { offset?: number }) => {
+        if (cmd === "search_files") {
+          return (args.offset ?? 0) === 0 ? [pick(1), pick(2)] : [pick(3)];
+        }
+        if (cmd === "search_count") return 3;
+        return undefined;
+      },
+    );
+    const useSearchStore = await freshStore();
+
+    useSearchStore.setState({ query: "q" });
+    await useSearchStore.getState().runSearch("q", true);
+    await useSearchStore.getState().loadMore();
+
+    expect(useSearchStore.getState().results.map((r) => r.id)).toEqual([
+      1, 2, 3,
+    ]);
+    expect(
+      invoke.mock.calls.some(
+        ([cmd, args]) =>
+          cmd === "search_files" && (args as { offset?: number }).offset === 2,
+      ),
+    ).toBe(true);
+  });
+
+  it("does not request another page once every result is loaded", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "search_files") return [pick(1)];
+      if (cmd === "search_count") return 1;
+      return undefined;
+    });
+    const useSearchStore = await freshStore();
+
+    useSearchStore.setState({ query: "q" });
+    await useSearchStore.getState().runSearch("q", true);
+    invoke.mockClear();
+
+    await useSearchStore.getState().loadMore();
+
+    expect(invoke).not.toHaveBeenCalled();
+  });
+});

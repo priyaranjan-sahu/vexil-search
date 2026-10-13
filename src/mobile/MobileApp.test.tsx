@@ -148,7 +148,7 @@ describe("MobileApp shell", () => {
     vi.useRealTimers();
   });
 
-  it("gates indexing on All Files Access and prompts until granted", async () => {
+  it("scans without All Files Access by indexing picked folders via SAF", async () => {
     const openAllFilesAccess = vi.fn();
     (window as unknown as { VexilAndroid?: unknown }).VexilAndroid = {
       hasAllFilesAccess: () => false,
@@ -157,24 +157,43 @@ describe("MobileApp shell", () => {
     };
     render(<MobileApp />);
     await flush();
-    // Without access, indexing must not run: it would scan an empty device.
+    // Picked folders are reached through the Storage Access Framework, so a
+    // scan still runs even when the broad permission is missing.
     expect(
       mockInvoke.mock.calls.some(([cmd]) => cmd === "start_indexing"),
-    ).toBe(false);
+    ).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Allow Access" }));
     expect(openAllFilesAccess).toHaveBeenCalledTimes(1);
-    // Granting access (native event) kicks off the first scan.
+  });
+
+  it("adds a picked folder with its SAF tree uri", async () => {
+    (window as unknown as { VexilAndroid?: unknown }).VexilAndroid = {
+      hasAllFilesAccess: () => false,
+      openAllFilesAccess: vi.fn(),
+      pickFolder: vi.fn(),
+    };
+    render(<MobileApp />);
+    await flush();
     await act(async () => {
       window.dispatchEvent(
-        new CustomEvent("vexil:all-files-access", {
-          detail: { granted: true },
+        new CustomEvent("vexil:folder-picked", {
+          detail: {
+            path: "/storage/emulated/0/Docs",
+            name: "Docs",
+            uri: "content://com.android.externalstorage.documents/tree/primary%3ADocs",
+          },
         }),
       );
       await Promise.resolve();
     });
-    expect(
-      mockInvoke.mock.calls.some(([cmd]) => cmd === "start_indexing"),
-    ).toBe(true);
+    const call = mockInvoke.mock.calls.find(
+      ([cmd]) => cmd === "add_mobile_root",
+    );
+    expect(call?.[1]).toMatchObject({
+      path: "/storage/emulated/0/Docs",
+      name: "Docs",
+      uri: "content://com.android.externalstorage.documents/tree/primary%3ADocs",
+    });
   });
 
   it("shows an error toast when the clipboard write fails", async () => {

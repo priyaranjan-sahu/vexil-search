@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::io::{Cursor, Read, Seek};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 
@@ -37,7 +37,11 @@ pub fn should_index_content(ext: &str) -> bool {
 pub fn extract_text(path: &Path, ext: &str) -> String {
     let ext = ext.to_lowercase();
     let text = match ext.as_str() {
-        "docx" | "pptx" | "xlsx" | "epub" => safe(|| zip_text(path, &ext)).unwrap_or_default(),
+        "docx" | "pptx" | "xlsx" | "epub" => safe(|| {
+            let file = std::fs::File::open(path).map_err(|e| format!("open '{path:?}': {e}"))?;
+            zip_text(file, &ext)
+        })
+        .unwrap_or_default(),
         "pdf" => {
             // Refuse to load an enormous file into the extractor; matching on
             // size here is cheap and bounds the extractor's memory up front.
@@ -52,6 +56,31 @@ pub fn extract_text(path: &Path, ext: &str) -> String {
             }
         }
         _ => safe(|| plain_text(path)).unwrap_or_default(),
+    };
+    text.chars().take(MAX_EXTRACT_CHARS).collect()
+}
+
+/// Same as [`extract_text`], but for content that never touches the filesystem.
+///
+/// Android's Storage Access Framework hands the indexer bytes from a picked
+/// folder (`content://` documents), not a readable path, so the format
+/// handlers run against an in-memory buffer instead.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub fn extract_text_from_bytes(bytes: &[u8], ext: &str) -> String {
+    let ext = ext.to_lowercase();
+    let text = match ext.as_str() {
+        "docx" | "pptx" | "xlsx" | "epub" => {
+            safe(|| zip_text(Cursor::new(bytes), &ext)).unwrap_or_default()
+        }
+        "pdf" => {
+            if bytes.len() as u64 > MAX_SOURCE_BYTES {
+                String::new()
+            } else {
+                safe(|| pdf_extract::extract_text_from_mem(bytes).map_err(|e| e.to_string()))
+                    .unwrap_or_default()
+            }
+        }
+        _ => decode_text(&bytes[..bytes.len().min(MAX_TEXT_BYTES as usize)]),
     };
     text.chars().take(MAX_EXTRACT_CHARS).collect()
 }
@@ -113,7 +142,10 @@ fn decode_text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-fn read_entry(archive: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Result<String, String> {
+fn read_entry<R: Read + Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    name: &str,
+) -> Result<String, String> {
     let mut entry = archive
         .by_name(name)
         .map_err(|e| format!("no '{name}': {e}"))?;
@@ -126,9 +158,8 @@ fn read_entry(archive: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Resul
     Ok(decode_text(&buf))
 }
 
-fn zip_text(path: &Path, ext: &str) -> Result<String, String> {
-    let file = std::fs::File::open(path).map_err(|e| format!("open '{path:?}': {e}"))?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+fn zip_text<R: Read + Seek>(reader: R, ext: &str) -> Result<String, String> {
+    let mut archive = zip::ZipArchive::new(reader).map_err(|e| e.to_string())?;
     match ext {
         "docx" => {
             let xml = read_entry(&mut archive, "word/document.xml")?;
@@ -210,8 +241,8 @@ fn zip_text(path: &Path, ext: &str) -> Result<String, String> {
     }
 }
 
-fn archive_names(
-    archive: &mut zip::ZipArchive<std::fs::File>,
+fn archive_names<R: Read + Seek>(
+    archive: &mut zip::ZipArchive<R>,
     pred: impl Fn(&str) -> bool,
 ) -> Vec<String> {
     let mut names = Vec::new();
@@ -239,7 +270,7 @@ fn collect_text(xml: &str, scopes: &[&str], blocks: &[&str], skip: &[&str]) -> S
 
     loop {
         match reader.read_event() {
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+            Ok(Event::Start(ref e)) => {
                 let qname = e.name();
                 let name = local(qname.as_ref());
                 if scopes.contains(&name) {
@@ -248,6 +279,20 @@ fn collect_text(xml: &str, scopes: &[&str], blocks: &[&str], skip: &[&str]) -> S
                 if skip.contains(&name) {
                     skip_depth += 1;
                 }
+                if skip_depth == 0
+                    && (scopes.is_empty() || scope_depth > 0)
+                    && blocks.contains(&name)
+                {
+                    out.push('\n');
+                }
+            }
+            Ok(Event::Empty(ref e)) => {
+                // A self-closing tag has no matching `End`, so it must not bump
+                // the depth counters. Incrementing here (as the old combined arm
+                // did) left `scope_depth`/`skip_depth` permanently inflated by
+                // every `<.../>`, which silenced all subsequent text.
+                let qname = e.name();
+                let name = local(qname.as_ref());
                 if skip_depth == 0
                     && (scopes.is_empty() || scope_depth > 0)
                     && blocks.contains(&name)
@@ -270,6 +315,13 @@ fn collect_text(xml: &str, scopes: &[&str], blocks: &[&str], skip: &[&str]) -> S
                     if let Ok(s) = unescape(t) {
                         out.push_str(&s);
                     }
+                }
+            }
+            Ok(Event::CData(ref t)) => {
+                // Unescaped character data (e.g. RSS descriptions, embedded HTML)
+                // was dropped by the catch-all arm; it is real searchable text.
+                if skip_depth == 0 && (scopes.is_empty() || scope_depth > 0) {
+                    out.push_str(t);
                 }
             }
             Ok(Event::Eof) => break,
@@ -453,5 +505,26 @@ mod tests {
         assert!(should_index_content("txt"));
         assert!(!should_index_content("png"));
         assert!(!should_index_content("exe"));
+    }
+
+    /// SAF hands the indexer bytes, not a path, so the handlers must run from a
+    /// buffer too.
+    #[test]
+    fn extracts_structured_text_from_bytes() {
+        let xml = r#"<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>SAF_BYTES_MARKER</w:t></w:r></w:p></w:body></w:document>"#;
+        let zip = make_zip(&[("word/document.xml", xml)]);
+        let text = extract_text_from_bytes(&zip, "docx");
+        assert!(text.contains("SAF_BYTES_MARKER"), "got: {text:?}");
+    }
+
+    #[test]
+    fn decodes_utf16_bytes_without_a_path() {
+        let mut bytes = vec![0xFF, 0xFE];
+        for u in "SAF_UTF16_MARKER".encode_utf16() {
+            bytes.extend_from_slice(&u.to_le_bytes());
+        }
+        let text = extract_text_from_bytes(&bytes, "txt");
+        assert!(text.contains("SAF_UTF16_MARKER"), "got: {text:?}");
+        assert!(!text.contains('\u{0}'));
     }
 }
