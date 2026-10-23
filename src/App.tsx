@@ -9,6 +9,7 @@ import "./App.css";
 
 import { DirectoryTree } from "./components/DirectoryTree";
 import { ResultsTable } from "./components/ResultsTable";
+import { QuickLookModal } from "./components/QuickLookModal";
 import { TrashPanel } from "./components/TrashPanel";
 import { TRASH_RETENTION_DAYS } from "./lib/confirmDelete";
 import { openExternalUrl } from "./lib/openExternal";
@@ -89,6 +90,7 @@ function App() {
     setShowTrash,
     handleCopyPath,
     handleDelete,
+    openInExplorer,
   } = useSearchStore();
 
   const pro = useLicenseStore((state) => state.status?.pro ?? false);
@@ -176,6 +178,10 @@ function App() {
     y: number;
     result: SearchResult;
   } | null>(null);
+  const [quickLookResult, setQuickLookResult] = useState<SearchResult | null>(
+    null,
+  );
+  const [lastIndexedTime, setLastIndexedTime] = useState<number | null>(null);
 
   // Close context menu on click anywhere
   useEffect(() => {
@@ -243,6 +249,7 @@ function App() {
 
     const unlistenDone = listen<number>("indexing-done", () => {
       setIndexingProgress(null);
+      setLastIndexedTime(Date.now());
       invoke<number>("get_index_stats")
         .then(setDbTotalCount)
         .catch(console.error);
@@ -250,6 +257,13 @@ function App() {
       if (!useSearchStore.getState().query.trim()) {
         void runBrowse();
       }
+    });
+
+    const unlistenCancelled = listen("indexing-cancelled", () => {
+      setIndexingProgress(null);
+      invoke<number>("get_index_stats")
+        .then(setDbTotalCount)
+        .catch(console.error);
     });
 
     invoke<number>("get_index_stats")
@@ -271,6 +285,7 @@ function App() {
     return () => {
       unlistenProgress.then((f) => f());
       unlistenDone.then((f) => f());
+      unlistenCancelled.then((f) => f());
       unlistenRadar.then((f) => f());
     };
   }, [
@@ -354,46 +369,6 @@ function App() {
   useEffect(() => {
     runSearch(searchQuery);
   }, [searchQuery, activeCategory, runSearch]);
-
-  // Escape closes settings/about/Trash, then clears the query; Cmd/Ctrl+N
-  // clears and refocuses search; Cmd/Ctrl+C copies the selected row's path.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        if (showSettings) {
-          setShowSettings(false);
-        } else if (showAbout) {
-          setShowAbout(false);
-        } else if (showTrash) {
-          setShowTrash(false);
-        } else {
-          setSearchQuery("");
-        }
-      } else if ((e.metaKey || e.ctrlKey) && (e.key === "n" || e.key === "N")) {
-        e.preventDefault();
-        setSearchQuery("");
-        document.querySelector<HTMLInputElement>(".search-input")?.focus();
-      } else if (
-        (e.metaKey || e.ctrlKey) &&
-        (e.key === "c" || e.key === "C") &&
-        !isEditingTextTarget(e.target)
-      ) {
-        e.preventDefault();
-        handleCopyPath();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [
-    showSettings,
-    showAbout,
-    showTrash,
-    setShowSettings,
-    setShowAbout,
-    setShowTrash,
-    setSearchQuery,
-    handleCopyPath,
-  ]);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -516,6 +491,93 @@ function App() {
       setSelectedResult(null);
     }
   }, [selectedResult, visibleSelection, setSelectedResult]);
+
+  // Keyboard navigation & Shortcuts:
+  // - ArrowUp/ArrowDown: navigate search results
+  // - Enter: open selected file
+  // - Space: toggle Quick Look preview
+  // - Escape: close preview/context menu/dialogs, or clear search
+  // - Cmd/Ctrl+N: refocus search
+  // - Cmd/Ctrl+C: copy path
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (quickLookResult) {
+          setQuickLookResult(null);
+        } else if (contextMenu) {
+          setContextMenu(null);
+        } else if (showSettings) {
+          setShowSettings(false);
+        } else if (showAbout) {
+          setShowAbout(false);
+        } else if (showTrash) {
+          setShowTrash(false);
+        } else {
+          setSearchQuery("");
+        }
+      } else if (e.key === "ArrowDown") {
+        if (!isEditingTextTarget(e.target) && filteredResults.length > 0) {
+          e.preventDefault();
+          const curId = visibleSelection?.id;
+          const curIdx = curId
+            ? filteredResults.findIndex((r) => r.id === curId)
+            : -1;
+          const nextIdx = curIdx < filteredResults.length - 1 ? curIdx + 1 : 0;
+          const nextItem = filteredResults.at(nextIdx);
+          if (nextItem) setSelectedResult(nextItem);
+        }
+      } else if (e.key === "ArrowUp") {
+        if (!isEditingTextTarget(e.target) && filteredResults.length > 0) {
+          e.preventDefault();
+          const curId = visibleSelection?.id;
+          const curIdx = curId
+            ? filteredResults.findIndex((r) => r.id === curId)
+            : 0;
+          const prevIdx = curIdx > 0 ? curIdx - 1 : filteredResults.length - 1;
+          const prevItem = filteredResults.at(prevIdx);
+          if (prevItem) setSelectedResult(prevItem);
+        }
+      } else if (e.key === "Enter") {
+        if (!isEditingTextTarget(e.target) && visibleSelection) {
+          e.preventDefault();
+          openResult(visibleSelection);
+        }
+      } else if (e.key === " ") {
+        if (!isEditingTextTarget(e.target) && visibleSelection) {
+          e.preventDefault();
+          setQuickLookResult((prev) => (prev ? null : visibleSelection));
+        }
+      } else if ((e.metaKey || e.ctrlKey) && (e.key === "n" || e.key === "N")) {
+        e.preventDefault();
+        setSearchQuery("");
+        document.querySelector<HTMLInputElement>(".search-input")?.focus();
+      } else if (
+        (e.metaKey || e.ctrlKey) &&
+        (e.key === "c" || e.key === "C") &&
+        !isEditingTextTarget(e.target)
+      ) {
+        e.preventDefault();
+        handleCopyPath();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [
+    showSettings,
+    showAbout,
+    showTrash,
+    setShowSettings,
+    setShowAbout,
+    setShowTrash,
+    setSearchQuery,
+    handleCopyPath,
+    quickLookResult,
+    contextMenu,
+    filteredResults,
+    visibleSelection,
+    setSelectedResult,
+    openResult,
+  ]);
 
   return (
     <div className="container">
@@ -1018,6 +1080,11 @@ function App() {
         )}
         <span style={{ marginLeft: "16px", color: "var(--text-secondary)" }}>
           · Database: {dbTotalCount.toLocaleString()} files
+          {lastIndexedTime && (
+            <span style={{ marginLeft: "8px", color: "var(--text-muted)" }}>
+              · Indexed recently
+            </span>
+          )}
         </span>
         {indexingProgress !== null && (
           <span
@@ -1038,6 +1105,25 @@ function App() {
               }}
             ></div>
             Scanning: {indexingProgress.toLocaleString()}
+            <button
+              onClick={() => {
+                invoke("cancel_indexing").catch(console.error);
+                setIndexingProgress(null);
+              }}
+              style={{
+                marginLeft: "4px",
+                padding: "1px 6px",
+                fontSize: "0.7rem",
+                borderRadius: "3px",
+                border: "1px solid var(--surface-border)",
+                backgroundColor: "transparent",
+                color: "var(--text-secondary)",
+                cursor: "pointer",
+              }}
+              title="Stop scanning"
+            >
+              Stop
+            </button>
           </span>
         )}
       </div>
@@ -1542,6 +1628,17 @@ function App() {
         </div>
       )}
 
+      {/* Quick Look Preview Modal */}
+      <QuickLookModal
+        result={quickLookResult}
+        onClose={() => setQuickLookResult(null)}
+        onOpen={(r) => {
+          openResult(r);
+          setQuickLookResult(null);
+        }}
+        onReveal={openInExplorer}
+      />
+
       {/* Custom Context Menu */}
       {contextMenu && (
         <div
@@ -1555,26 +1652,44 @@ function App() {
             boxShadow: "0 4px 15px rgba(0,0,0,0.2)",
             padding: "4px",
             zIndex: 9999,
-            minWidth: "160px",
+            minWidth: "180px",
           }}
           onClick={(e) => e.stopPropagation()}
         >
           <div
             className="menu-dropdown-item"
             onClick={() => {
-              const res = contextMenu.result;
-              if (myPicks.some((p) => p.id === res.id)) {
-                removeMyPick(res.id);
-              } else {
-                addMyPick(res);
-              }
+              openResult(contextMenu.result);
               setContextMenu(null);
             }}
           >
-            {myPicks.some((p) => p.id === contextMenu.result.id)
-              ? "Unpin from My Picks"
-              : "Pin to My Picks"}
+            Open File
           </div>
+          <div
+            className="menu-dropdown-item"
+            onClick={() => {
+              openInExplorer(contextMenu.result.path);
+              setContextMenu(null);
+            }}
+          >
+            Reveal in Folder
+          </div>
+          <div
+            className="menu-dropdown-item"
+            onClick={() => {
+              setQuickLookResult(contextMenu.result);
+              setContextMenu(null);
+            }}
+          >
+            Quick Look (Space)
+          </div>
+          <div
+            style={{
+              height: "1px",
+              backgroundColor: "var(--surface-border)",
+              margin: "4px 0",
+            }}
+          />
           <div
             className="menu-dropdown-item"
             onClick={() => {
@@ -1594,6 +1709,67 @@ function App() {
             }}
           >
             Copy Path
+          </div>
+          <div
+            className="menu-dropdown-item"
+            onClick={() => {
+              const title = contextMenu.result.title;
+              void (async () => {
+                if (!navigator.clipboard) {
+                  void message("Clipboard unavailable");
+                  return;
+                }
+                try {
+                  await navigator.clipboard.writeText(title);
+                } catch {
+                  void message("Could not copy title");
+                }
+              })();
+              setContextMenu(null);
+            }}
+          >
+            Copy File Name
+          </div>
+          <div
+            style={{
+              height: "1px",
+              backgroundColor: "var(--surface-border)",
+              margin: "4px 0",
+            }}
+          />
+          <div
+            className="menu-dropdown-item"
+            onClick={() => {
+              const res = contextMenu.result;
+              if (myPicks.some((p) => p.id === res.id)) {
+                removeMyPick(res.id);
+              } else {
+                addMyPick(res);
+              }
+              setContextMenu(null);
+            }}
+          >
+            {myPicks.some((p) => p.id === contextMenu.result.id)
+              ? "Unpin from My Picks"
+              : "Pin to My Picks"}
+          </div>
+          <div
+            style={{
+              height: "1px",
+              backgroundColor: "var(--surface-border)",
+              margin: "4px 0",
+            }}
+          />
+          <div
+            className="menu-dropdown-item"
+            style={{ color: "#ef4444" }}
+            onClick={() => {
+              setSelectedResult(contextMenu.result);
+              void handleDelete();
+              setContextMenu(null);
+            }}
+          >
+            Delete File
           </div>
         </div>
       )}

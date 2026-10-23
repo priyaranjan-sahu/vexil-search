@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useRef, useEffect } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { HighlightedSnippet } from "./HighlightedSnippet";
 import {
@@ -200,6 +200,15 @@ export const ResultsTable = ({
 
   const virtualItems = virtualizer.getVirtualItems();
   const openResult = useSearchStore((state) => state.openResult);
+
+  useEffect(() => {
+    if (selectedResult) {
+      const idx = filteredResults.findIndex((r) => r.id === selectedResult.id);
+      if (idx >= 0) {
+        virtualizer.scrollToIndex(idx, { align: "auto" });
+      }
+    }
+  }, [selectedResult, filteredResults, virtualizer]);
 
   return (
     <div

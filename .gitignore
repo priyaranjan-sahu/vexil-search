@@ -63,3 +63,5 @@ src-tauri/gen/android/app/*.keystore
 # Stray root-level artifacts (accidentally committed, not source)
 /1465
 /social_preview.jpg
+scratch/
+run_log.txt

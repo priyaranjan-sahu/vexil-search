@@ -573,6 +573,140 @@ async fn start_indexing(
     Ok("Indexing started in the background".to_string())
 }
 
+#[derive(Default, Debug, Clone)]
+pub struct StructuredQuery {
+    pub text_query: String,
+    pub ext: Option<String>,
+    pub folder: Option<String>,
+    pub min_size: Option<i64>,
+    pub max_size: Option<i64>,
+}
+
+impl StructuredQuery {
+    pub fn has_filters(&self) -> bool {
+        self.ext.is_some()
+            || self.folder.is_some()
+            || self.min_size.is_some()
+            || self.max_size.is_some()
+    }
+
+    pub fn to_sql_clauses(&self) -> String {
+        let mut sql = String::new();
+        if let Some(ref ext) = self.ext {
+            let safe_ext = ext
+                .chars()
+                .filter(|c| c.is_alphanumeric())
+                .collect::<String>();
+            if !safe_ext.is_empty() {
+                sql.push_str(&format!(
+                    " AND (f.title LIKE '%.{safe_ext}' OR f.path LIKE '%.{safe_ext}')"
+                ));
+            }
+        }
+        if let Some(ref folder) = self.folder {
+            let escaped = folder
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+                .replace('\'', "''");
+            sql.push_str(&format!(" AND f.path LIKE '%{escaped}%' ESCAPE '\\'"));
+        }
+        if let Some(min) = self.min_size {
+            sql.push_str(&format!(" AND m.size >= {min}"));
+        }
+        if let Some(max) = self.max_size {
+            sql.push_str(&format!(" AND m.size <= {max}"));
+        }
+        sql
+    }
+
+    pub fn to_fts_sql_clauses(&self) -> String {
+        let mut sql = String::new();
+        if let Some(ref ext) = self.ext {
+            let safe_ext = ext
+                .chars()
+                .filter(|c| c.is_alphanumeric())
+                .collect::<String>();
+            if !safe_ext.is_empty() {
+                sql.push_str(&format!(
+                    " AND (file_index.title LIKE '%.{safe_ext}' OR file_index.path LIKE '%.{safe_ext}')"
+                ));
+            }
+        }
+        if let Some(ref folder) = self.folder {
+            let escaped = folder
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+                .replace('\'', "''");
+            sql.push_str(&format!(
+                " AND file_index.path LIKE '%{escaped}%' ESCAPE '\\'"
+            ));
+        }
+        if let Some(min) = self.min_size {
+            sql.push_str(&format!(" AND m.size >= {min}"));
+        }
+        if let Some(max) = self.max_size {
+            sql.push_str(&format!(" AND m.size <= {max}"));
+        }
+        sql
+    }
+}
+
+pub fn parse_size_str(s: &str) -> Option<i64> {
+    let s = s.trim().to_lowercase();
+    if let Some(num) = s.strip_suffix("gb") {
+        num.parse::<f64>().ok().map(|v| (v * 1024.0 * 1024.0 * 1024.0) as i64)
+    } else if let Some(num) = s.strip_suffix("mb") {
+        num.parse::<f64>().ok().map(|v| (v * 1024.0 * 1024.0) as i64)
+    } else if let Some(num) = s.strip_suffix("kb") {
+        num.parse::<f64>().ok().map(|v| (v * 1024.0) as i64)
+    } else if let Some(num) = s.strip_suffix('b') {
+        num.parse::<i64>().ok()
+    } else {
+        s.parse::<i64>().ok()
+    }
+}
+
+pub fn parse_structured_query(raw: &str) -> StructuredQuery {
+    let mut text_parts = Vec::new();
+    let mut ext = None;
+    let mut folder = None;
+    let mut min_size = None;
+    let mut max_size = None;
+
+    for token in raw.split_whitespace() {
+        if let Some(val) = token.strip_prefix("ext:") {
+            let clean = val.trim_start_matches('.').to_lowercase();
+            if !clean.is_empty() {
+                ext = Some(clean);
+            }
+        } else if let Some(val) = token.strip_prefix("folder:") {
+            if !val.is_empty() {
+                folder = Some(val.to_string());
+            }
+        } else if let Some(val) = token.strip_prefix("path:") {
+            if !val.is_empty() {
+                folder = Some(val.to_string());
+            }
+        } else if let Some(val) = token.strip_prefix("size:>") {
+            min_size = parse_size_str(val);
+        } else if let Some(val) = token.strip_prefix("size:<") {
+            max_size = parse_size_str(val);
+        } else {
+            text_parts.push(token);
+        }
+    }
+
+    StructuredQuery {
+        text_query: text_parts.join(" "),
+        ext,
+        folder,
+        min_size,
+        max_size,
+    }
+}
+
 fn parse_fts_query(query: &str, category_is_all: bool) -> (String, Vec<String>, String) {
     let alnum_len = |term: &str| term.chars().filter(|c| c.is_alphanumeric()).count();
     let mut fts_terms: Vec<String> = Vec::new();
@@ -623,23 +757,18 @@ async fn search_files(
         return Ok(vec![]);
     }
 
-    // 2.7: callers page through results instead of silently receiving the first
-    // 50. Clamp the window so a bad client cannot ask for the whole table.
+    let structured = parse_structured_query(trimmed_query);
+    let search_term = structured.text_query.trim().to_string();
+    if search_term.is_empty() && !structured.has_filters() {
+        return Ok(vec![]);
+    }
+
     let limit = limit.unwrap_or(50).clamp(1, 200);
     let offset = offset.unwrap_or(0).max(0);
 
     let pool = app_handle.state::<db::DbPool>();
     let conn = pool.get().map_err(|_| "DB pool error".to_string())?;
 
-    let is_regex = query.starts_with('/') && query.ends_with('/') && query.len() > 2;
-    // Trigram can only match tokens with >= 3 alphanumeric chars; drop shorter
-    // tokens from the FTS query, and fall back to LIKE when none remain.
-    let alnum_len = |term: &str| term.chars().filter(|c| c.is_alphanumeric()).count();
-    if alnum_len(trimmed_query) == 0 {
-        return Ok(vec![]);
-    }
-    let trigram_capable = query.split_whitespace().any(|t| alnum_len(t) >= 3);
-    let short_query = !is_regex && !trigram_capable;
     let mut final_results = Vec::new();
 
     let cat_filter = if category == "All" {
@@ -679,6 +808,58 @@ async fn search_files(
         _ => "ORDER BY bm25(file_index, 10.0, 5.0, 1.0), file_index.rowid",
     };
 
+    if search_term.is_empty() {
+        let sql = format!(
+            "
+            SELECT f.rowid, f.title, f.path,
+                   'Matched search filter' as snippet,
+                   100 as bm25,
+                   m.size, m.mtime, m.category
+            FROM file_index f
+            LEFT JOIN file_metadata m ON f.path = m.path
+            WHERE 1=1 {} {}
+            {}
+            LIMIT {limit} OFFSET {offset}
+        ",
+            cat_filter, structured.to_sql_clauses(), order_sql
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![];
+        if category != "All" {
+            params_vec.push(&category);
+        }
+        let results = stmt
+            .query_map(rusqlite::params_from_iter(params_vec), |row| {
+                Ok(SearchResult {
+                    id: row.get::<_, i64>(0)?,
+                    title: row.get::<_, String>(1)?,
+                    path: row.get::<_, String>(2)?,
+                    snippet: row
+                        .get::<_, String>(3)
+                        .unwrap_or_else(|_| "Matched filter".to_string()),
+                    relevance: 100,
+                    size: row.get::<_, i64>(5).unwrap_or(0) as u64,
+                    modified: row.get::<_, i64>(6).unwrap_or(0),
+                    category: row
+                        .get::<_, String>(7)
+                        .unwrap_or_else(|_| "Other".to_string()),
+                })
+            })
+            .map_err(|e| e.to_string())?;
+
+        for res in results {
+            if let Ok(r) = res {
+                final_results.push(r);
+            }
+        }
+        return Ok(final_results);
+    }
+
+    let is_regex = search_term.starts_with('/') && search_term.ends_with('/') && search_term.len() > 2;
+    let alnum_len = |term: &str| term.chars().filter(|c| c.is_alphanumeric()).count();
+    let trigram_capable = search_term.split_whitespace().any(|t| alnum_len(t) >= 3);
+    let short_query = !is_regex && !trigram_capable;
+
     if short_query {
         let sql = format!(
             "
@@ -688,16 +869,13 @@ async fn search_files(
                    m.size, m.mtime, m.category
             FROM file_index f
             LEFT JOIN file_metadata m ON f.path = m.path
-            WHERE (f.path LIKE ?1 ESCAPE '\\' OR f.title LIKE ?2 ESCAPE '\\') {}
+            WHERE (f.path LIKE ?1 ESCAPE '\\' OR f.title LIKE ?2 ESCAPE '\\') {} {}
             {}
             LIMIT {limit} OFFSET {offset}
         ",
-            cat_filter, order_sql
+            cat_filter, structured.to_sql_clauses(), order_sql
         );
-        // A user-typed `%` or `_` is a literal, not a wildcard: escape the LIKE
-        // metacharacters (and the escape char itself) so the short query means
-        // what it says instead of silently matching far more than requested.
-        let escaped = trimmed_query
+        let escaped = search_term
             .replace('\\', "\\\\")
             .replace('%', "\\%")
             .replace('_', "\\_");
@@ -734,7 +912,7 @@ async fn search_files(
             }
         }
     } else if is_regex {
-        let regex_pattern = &query[1..query.len() - 1];
+        let regex_pattern = &search_term[1..search_term.len() - 1];
         let sql = format!(
             "
             SELECT f.rowid, f.title, f.path,
@@ -743,11 +921,11 @@ async fn search_files(
                    m.size, m.mtime, m.category
             FROM file_index f
             LEFT JOIN file_metadata m ON f.path = m.path
-            WHERE (f.path REGEXP ?1 OR f.title REGEXP ?2) {}
+            WHERE (f.path REGEXP ?1 OR f.title REGEXP ?2) {} {}
             {}
             LIMIT {limit} OFFSET {offset}
         ",
-            cat_filter, order_sql
+            cat_filter, structured.to_sql_clauses(), order_sql
         );
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
 
@@ -787,30 +965,23 @@ async fn search_files(
             "AND m.category = ?2"
         };
         let (fts_query, short_terms, short_filter_sql) =
-            parse_fts_query(&query, category == "All");
+            parse_fts_query(&search_term, category == "All");
         let sql = format!(
             "
             SELECT file_index.rowid, file_index.title, file_index.path,
                    COALESCE(
-                       -- Column -1 makes FTS5 pick whichever column actually
-                       -- matches (title, path, or body text) with the densest
-                       -- match window. Explicit column snippets are useless
-                       -- here: snippet(col) returns NULL only for out-of-range
-                       -- columns, so a title snippet (unhighlighted filler) would
-                       -- always shadow a content-column match that the user is
-                       -- actually looking for.
-                       snippet(file_index, -1, '<b>', '</b>', '...', 12),
-                       'The file matched your search'
+                        snippet(file_index, -1, '<b>', '</b>', '...', 12),
+                        'The file matched your search'
                    ),
                    bm25(file_index, 10.0, 5.0, 1.0),
                    m.size, m.mtime, m.category
             FROM file_index
             LEFT JOIN file_metadata m ON file_index.path = m.path
-            WHERE file_index MATCH ?1 {} {}
+            WHERE file_index MATCH ?1 {} {} {}
             {}
             LIMIT {limit} OFFSET {offset}
         ",
-            cat_filter_fts, short_filter_sql, order_fts_sql
+            cat_filter_fts, short_filter_sql, structured.to_fts_sql_clauses(), order_fts_sql
         );
 
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
@@ -827,8 +998,6 @@ async fn search_files(
         let results = stmt
             .query_map(rusqlite::params_from_iter(params_vec), |row| {
                 let bm25: f64 = row.get::<_, f64>(4).unwrap_or(0.0);
-                // Lower (more negative) BM25 indicates a stronger match.
-                // Scale score monotonically into [1, 100].
                 let score = (-bm25).max(0.0);
                 let relevance =
                     ((score / (score + 2.0)) * 100.0).clamp(1.0, 100.0) as u8;
@@ -864,10 +1033,6 @@ async fn search_files(
     Ok(final_results)
 }
 
-/// 2.7: total number of files matching `query` (optionally limited to a
-/// category). Search pages through `search_files`; this tells the UI the true
-/// match count so it can render "showing X of N" and enable load-more instead
-/// of silently truncating at the page size.
 #[tauri::command]
 async fn search_count(
     app_handle: AppHandle,
@@ -879,30 +1044,51 @@ async fn search_count(
         return Ok(0);
     }
 
+    let structured = parse_structured_query(trimmed_query);
+    let search_term = structured.text_query.trim().to_string();
+    if search_term.is_empty() && !structured.has_filters() {
+        return Ok(0);
+    }
+
     let pool = app_handle.state::<db::DbPool>();
     let conn = pool.get().map_err(|_| "DB pool error".to_string())?;
 
-    let is_regex = query.starts_with('/') && query.ends_with('/') && query.len() > 2;
-    let alnum_len = |term: &str| term.chars().filter(|c| c.is_alphanumeric()).count();
-    if alnum_len(trimmed_query) == 0 {
-        return Ok(0);
-    }
-    let trigram_capable = query.split_whitespace().any(|t| alnum_len(t) >= 3);
-    let short_query = !is_regex && !trigram_capable;
+    let cat_filter = if category == "All" {
+        ""
+    } else {
+        "AND m.category = ?3"
+    };
 
-    let count = if short_query {
-        let cat_filter = if category == "All" {
-            ""
-        } else {
-            "AND m.category = ?3"
-        };
+    if search_term.is_empty() {
         let sql = format!(
             "SELECT COUNT(*) FROM file_index f \
              LEFT JOIN file_metadata m ON f.path = m.path \
-             WHERE (f.path LIKE ?1 ESCAPE '\\' OR f.title LIKE ?2 ESCAPE '\\') {}",
-            cat_filter
+             WHERE 1=1 {} {}",
+            cat_filter, structured.to_sql_clauses()
         );
-        let escaped = trimmed_query
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![];
+        if category != "All" {
+            params_vec.push(&category);
+        }
+        return stmt.query_row(rusqlite::params_from_iter(params_vec), |row| {
+            row.get::<_, i64>(0)
+        }).map_err(|e| e.to_string());
+    }
+
+    let is_regex = search_term.starts_with('/') && search_term.ends_with('/') && search_term.len() > 2;
+    let alnum_len = |term: &str| term.chars().filter(|c| c.is_alphanumeric()).count();
+    let trigram_capable = search_term.split_whitespace().any(|t| alnum_len(t) >= 3);
+    let short_query = !is_regex && !trigram_capable;
+
+    let count = if short_query {
+        let sql = format!(
+            "SELECT COUNT(*) FROM file_index f \
+             LEFT JOIN file_metadata m ON f.path = m.path \
+             WHERE (f.path LIKE ?1 ESCAPE '\\' OR f.title LIKE ?2 ESCAPE '\\') {} {}",
+            cat_filter, structured.to_sql_clauses()
+        );
+        let escaped = search_term
             .replace('\\', "\\\\")
             .replace('%', "\\%")
             .replace('_', "\\_");
@@ -917,17 +1103,12 @@ async fn search_count(
         })
         .map_err(|e| e.to_string())?
     } else if is_regex {
-        let regex_pattern = &query[1..query.len() - 1];
-        let cat_filter = if category == "All" {
-            ""
-        } else {
-            "AND m.category = ?3"
-        };
+        let regex_pattern = &search_term[1..search_term.len() - 1];
         let sql = format!(
             "SELECT COUNT(*) FROM file_index f \
              LEFT JOIN file_metadata m ON f.path = m.path \
-             WHERE (f.path REGEXP ?1 OR f.title REGEXP ?2) {}",
-            cat_filter
+             WHERE (f.path REGEXP ?1 OR f.title REGEXP ?2) {} {}",
+            cat_filter, structured.to_sql_clauses()
         );
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![&regex_pattern, &regex_pattern];
@@ -945,12 +1126,12 @@ async fn search_count(
             "AND m.category = ?2"
         };
         let (fts_query, short_terms, short_filter_sql) =
-            parse_fts_query(&query, category == "All");
+            parse_fts_query(&search_term, category == "All");
         let sql = format!(
             "SELECT COUNT(*) FROM file_index \
              LEFT JOIN file_metadata m ON file_index.path = m.path \
-             WHERE file_index MATCH ?1 {} {}",
-            cat_filter_fts, short_filter_sql
+             WHERE file_index MATCH ?1 {} {} {}",
+            cat_filter_fts, short_filter_sql, structured.to_fts_sql_clauses()
         );
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![&fts_query];
@@ -968,6 +1149,92 @@ async fn search_count(
     };
 
     Ok(count)
+}
+
+#[tauri::command]
+async fn cancel_indexing(app_handle: AppHandle) -> Result<String, String> {
+    INDEX_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let _ = app_handle.emit("indexing-cancelled", ());
+    Ok("Indexing cancelled".to_string())
+}
+
+#[derive(serde::Serialize, Debug)]
+pub struct FilePreview {
+    pub path: String,
+    pub title: String,
+    pub size: u64,
+    pub modified: i64,
+    pub is_text: bool,
+    pub content: String,
+    pub lines_count: usize,
+    pub extension: String,
+}
+
+#[tauri::command]
+async fn get_file_preview(app_handle: AppHandle, path: String) -> Result<FilePreview, String> {
+    let allowed = security::AllowedRoots::new(true);
+    let valid_path = allowed
+        .validate(&path)
+        .map_err(|e| format!("Security: {}", e))?;
+
+    let canonical = valid_path.to_string_lossy().to_string();
+    let pool = app_handle.state::<db::DbPool>();
+    let conn = pool.get().map_err(|_| "DB pool error".to_string())?;
+    if !path_is_indexed(&conn, &canonical, &path).map_err(|e| format!("Security: {}", e))? {
+        return Err("Security: refusing preview for non-indexed file".to_string());
+    }
+
+    let meta = std::fs::metadata(&valid_path).map_err(|e| e.to_string())?;
+    let size = meta.len();
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    let title = valid_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.clone());
+    let ext = valid_path
+        .extension()
+        .map(|e| e.to_string_lossy().to_string().to_lowercase())
+        .unwrap_or_default();
+
+    let (is_text, preview_content, lines) = if size < 10 * 1024 * 1024 {
+        match std::fs::File::open(&valid_path) {
+            Ok(file) => {
+                use std::io::Read;
+                let mut take = file.take(16 * 1024);
+                let mut buf = Vec::new();
+                if take.read_to_end(&mut buf).is_ok() {
+                    if let Ok(text) = std::str::from_utf8(&buf) {
+                        let lines = text.lines().count();
+                        (true, text.chars().take(2000).collect::<String>(), lines)
+                    } else {
+                        (false, String::new(), 0)
+                    }
+                } else {
+                    (false, String::new(), 0)
+                }
+            }
+            Err(_) => (false, String::new(), 0),
+        }
+    } else {
+        (false, String::new(), 0)
+    };
+
+    Ok(FilePreview {
+        path,
+        title,
+        size,
+        modified,
+        is_text,
+        content: preview_content,
+        lines_count: lines,
+        extension: ext,
+    })
 }
 
 #[tauri::command]
@@ -1364,6 +1631,29 @@ mod tests {
         assert_eq!(short_terms, vec!["%v1%"]);
         assert!(filter_sql.contains("LIKE ?2"));
         assert!(filter_sql.contains("LIKE ?3"));
+    }
+
+    #[test]
+    fn parses_structured_query_operators() {
+        let q = super::parse_structured_query("invoice ext:pdf folder:finance size:>10mb");
+        assert_eq!(q.text_query, "invoice");
+        assert_eq!(q.ext, Some("pdf".to_string()));
+        assert_eq!(q.folder, Some("finance".to_string()));
+        assert_eq!(q.min_size, Some(10 * 1024 * 1024));
+        assert_eq!(q.max_size, None);
+        assert!(q.has_filters());
+        let clauses = q.to_sql_clauses();
+        assert!(clauses.contains("f.title LIKE '%.pdf'"));
+        assert!(clauses.contains("f.path LIKE '%finance%'"));
+        assert!(clauses.contains("m.size >= 10485760"));
+    }
+
+    #[test]
+    fn parses_size_strings_correctly() {
+        assert_eq!(super::parse_size_str("500b"), Some(500));
+        assert_eq!(super::parse_size_str("2kb"), Some(2048));
+        assert_eq!(super::parse_size_str("5mb"), Some(5242880));
+        assert_eq!(super::parse_size_str("1gb"), Some(1073741824));
     }
 
     #[test]
@@ -2042,7 +2332,9 @@ pub fn run() {
             updates::install_update,
             list_my_picks,
             add_my_pick,
-            remove_my_pick
+            remove_my_pick,
+            cancel_indexing,
+            get_file_preview
         ])
         .on_window_event(|window, event| if let WindowEvent::CloseRequested { api, .. } = event {
             let state = window.app_handle().state::<AppState>();
