@@ -248,8 +248,13 @@ fn archive_names<R: Read + Seek>(
     let mut names = Vec::new();
     for i in 0..archive.len() {
         if let Ok(f) = archive.by_index(i) {
-            if pred(f.name()) {
-                names.push(f.name().to_string());
+            // zip 9 makes `name()` fallible (it validates the stored encoding);
+            // an unreadably encoded name is not text-filterable — skip it the
+            // same way as an unreadable entry.
+            if let Ok(n) = f.name() {
+                if pred(&n) {
+                    names.push(n.into_owned());
+                }
             }
         }
     }

@@ -100,7 +100,7 @@ jobs:
         run: npm audit --audit-level=high || true
       # Blocking: a known-vulnerable crate fails the build.
       - name: Backend Security Audit (Cargo)
-        run: cargo install cargo-audit && cargo audit
+        run: cargo install cargo-audit && (cd src-tauri && cargo audit)
       - name: Frontend Type Checking
         run: npx tsc --noEmit
       # Tauri embeds dist/ brotli-compressed, so this cannot be checked by
