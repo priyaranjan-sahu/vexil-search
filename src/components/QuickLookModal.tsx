@@ -25,7 +25,8 @@ function formatBytes(bytes: number): string {
   const k = 1024;
   const sizes = ["B", "KB", "MB", "GB", "TB"];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
-  const unit = sizes.at(Math.min(i, sizes.length - 1)) ?? "B";
+  // eslint-disable-next-line security/detect-object-injection
+  const unit = sizes[Math.min(i, sizes.length - 1)] ?? "B";
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${unit}`;
 }
 

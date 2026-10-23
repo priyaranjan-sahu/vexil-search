@@ -10,6 +10,7 @@ import "./App.css";
 import { DirectoryTree } from "./components/DirectoryTree";
 import { ResultsTable } from "./components/ResultsTable";
 import { QuickLookModal } from "./components/QuickLookModal";
+import { DuplicateFinderModal } from "./components/DuplicateFinderModal";
 import { TrashPanel } from "./components/TrashPanel";
 import { TRASH_RETENTION_DAYS } from "./lib/confirmDelete";
 import { openExternalUrl } from "./lib/openExternal";
@@ -182,6 +183,29 @@ function App() {
     null,
   );
   const [lastIndexedTime, setLastIndexedTime] = useState<number | null>(null);
+  const [showDuplicates, setShowDuplicates] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [undoToast, setUndoToast] = useState<{
+    id: number;
+    name: string;
+  } | null>(null);
+  const [savedSearches, setSavedSearches] = useState<string[]>(() => {
+    try {
+      const stored = localStorage.getItem("vexil_saved_searches");
+      return stored ? JSON.parse(stored) : ["ext:pdf", "ext:rs", "size:>10mb"];
+    } catch {
+      return ["ext:pdf", "ext:rs", "size:>10mb"];
+    }
+  });
+  const [recentSearches, setRecentSearches] = useState<string[]>(() => {
+    try {
+      const stored = localStorage.getItem("vexil_recent_searches");
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [isSearchFocused, setIsSearchFocused] = useState(false);
 
   // Close context menu on click anywhere
   useEffect(() => {
@@ -370,9 +394,61 @@ function App() {
     runSearch(searchQuery);
   }, [searchQuery, activeCategory, runSearch]);
 
-  const handleSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    runSearch(searchQuery, true);
+  const recordRecentSearch = useCallback((query: string) => {
+    const q = query.trim();
+    if (!q) return;
+    setRecentSearches((prev) => {
+      const filtered = prev.filter((item) => item !== q);
+      const updated = [q, ...filtered].slice(0, 8);
+      try {
+        localStorage.setItem("vexil_recent_searches", JSON.stringify(updated));
+      } catch {
+        // Ignore storage failure
+      }
+      return updated;
+    });
+  }, []);
+
+  const toggleSaveSearch = useCallback((query: string) => {
+    const q = query.trim();
+    if (!q) return;
+    setSavedSearches((prev) => {
+      const updated = prev.includes(q)
+        ? prev.filter((item) => item !== q)
+        : [...prev, q];
+      try {
+        localStorage.setItem("vexil_saved_searches", JSON.stringify(updated));
+      } catch {
+        // Ignore storage failure
+      }
+      return updated;
+    });
+  }, []);
+
+  const handleToggleSelect = useCallback(
+    (result: SearchResult, isMulti: boolean) => {
+      if (isMulti) {
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          if (next.has(result.id)) {
+            next.delete(result.id);
+          } else {
+            next.add(result.id);
+          }
+          return next;
+        });
+      } else {
+        setSelectedIds(new Set([result.id]));
+      }
+    },
+    [],
+  );
+
+  const handleSearch = (e?: React.FormEvent, customQuery?: string) => {
+    if (e) e.preventDefault();
+    const q = customQuery !== undefined ? customQuery : searchQuery;
+    recordRecentSearch(q);
+    runSearch(q, true);
   };
 
   const saveShortcut = (e: React.FormEvent) => {
@@ -492,6 +568,81 @@ function App() {
     }
   }, [selectedResult, visibleSelection, setSelectedResult]);
 
+  const handleDeleteWithUndo = useCallback(async () => {
+    const selected = visibleSelection;
+    if (!selected) return;
+    await handleDelete();
+    try {
+      const items =
+        await invoke<Array<{ id: number; name: string }>>("trash_items");
+      if (items.length > 0) {
+        setUndoToast(items[0]);
+        setTimeout(() => setUndoToast(null), 8000);
+      }
+    } catch (err) {
+      console.error("Failed to query trash items for undo:", err);
+    }
+  }, [visibleSelection, handleDelete]);
+
+  const handleUndoDelete = useCallback(async () => {
+    if (!undoToast) return;
+    try {
+      await invoke("restore_trashed_file", { id: undoToast.id });
+      setUndoToast(null);
+      if (!searchQuery.trim()) {
+        void runBrowse();
+      } else {
+        runSearch(searchQuery, true);
+      }
+    } catch (err) {
+      console.error("Failed to restore file:", err);
+    }
+  }, [undoToast, searchQuery, runBrowse, runSearch]);
+
+  const handleBulkCopy = useCallback(() => {
+    const paths = filteredResults
+      .filter((r) => selectedIds.has(r.id))
+      .map((r) => r.path)
+      .join("\n");
+    if (paths && navigator.clipboard) {
+      navigator.clipboard.writeText(paths).catch(console.error);
+    }
+  }, [filteredResults, selectedIds]);
+
+  const handleBulkDelete = useCallback(async () => {
+    if (selectedIds.size === 0) return;
+    const confirm = window.confirm(
+      `Move ${selectedIds.size} selected file(s) to Trash?`,
+    );
+    if (!confirm) return;
+
+    for (const r of filteredResults) {
+      if (selectedIds.has(r.id)) {
+        try {
+          await invoke("delete_file", { path: r.path });
+        } catch (err) {
+          console.error("Failed to delete file:", err);
+        }
+      }
+    }
+    useSearchStore.setState((state) => ({
+      results: state.results.filter((r) => !selectedIds.has(r.id)),
+      browseSections: state.browseSections.map((section) => ({
+        ...section,
+        files: section.files.filter((r) => !selectedIds.has(r.id)),
+      })),
+      selectedResult: null,
+    }));
+    setSelectedIds(new Set());
+    const trashList = await invoke<Array<{ id: number; name: string }>>(
+      "trash_items",
+    ).catch(() => []);
+    if (trashList.length > 0) {
+      setUndoToast(trashList[0]);
+      setTimeout(() => setUndoToast(null), 8000);
+    }
+  }, [selectedIds, filteredResults]);
+
   // Keyboard navigation & Shortcuts:
   // - ArrowUp/ArrowDown: navigate search results
   // - Enter: open selected file
@@ -523,7 +674,8 @@ function App() {
             ? filteredResults.findIndex((r) => r.id === curId)
             : -1;
           const nextIdx = curIdx < filteredResults.length - 1 ? curIdx + 1 : 0;
-          const nextItem = filteredResults.at(nextIdx);
+          // eslint-disable-next-line security/detect-object-injection
+          const nextItem = filteredResults[nextIdx];
           if (nextItem) setSelectedResult(nextItem);
         }
       } else if (e.key === "ArrowUp") {
@@ -534,7 +686,8 @@ function App() {
             ? filteredResults.findIndex((r) => r.id === curId)
             : 0;
           const prevIdx = curIdx > 0 ? curIdx - 1 : filteredResults.length - 1;
-          const prevItem = filteredResults.at(prevIdx);
+          // eslint-disable-next-line security/detect-object-injection
+          const prevItem = filteredResults[prevIdx];
           if (prevItem) setSelectedResult(prevItem);
         }
       } else if (e.key === "Enter") {
@@ -761,7 +914,11 @@ function App() {
 
       {/* 2. Toolbar */}
       <div className="toolbar">
-        <form className="search-wrapper" onSubmit={handleSearch}>
+        <form
+          className="search-wrapper"
+          style={{ position: "relative" }}
+          onSubmit={(e) => handleSearch(e)}
+        >
           <svg
             className="search-icon"
             viewBox="0 0 24 24"
@@ -776,11 +933,150 @@ function App() {
             ref={searchInputRef}
             type="text"
             className="search-input"
-            placeholder="Search documents, apps, files..."
+            placeholder="Search documents, apps, files (e.g. ext:pdf size:>10mb)..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
+            onFocus={() => setIsSearchFocused(true)}
+            onBlur={() => setTimeout(() => setIsSearchFocused(false), 200)}
           />
+          {searchQuery.trim() && (
+            <button
+              type="button"
+              onClick={() => toggleSaveSearch(searchQuery)}
+              style={{
+                position: "absolute",
+                right: "10px",
+                top: "50%",
+                transform: "translateY(-50%)",
+                background: "transparent",
+                border: "none",
+                fontSize: "1rem",
+                color: savedSearches.includes(searchQuery.trim())
+                  ? "#f59e0b"
+                  : "var(--text-muted)",
+                cursor: "pointer",
+                padding: "2px 6px",
+              }}
+              title={
+                savedSearches.includes(searchQuery.trim())
+                  ? "Remove from Saved Searches"
+                  : "Save search shortcut"
+              }
+            >
+              ★
+            </button>
+          )}
+
+          {isSearchFocused &&
+            !searchQuery.trim() &&
+            recentSearches.length > 0 && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: "100%",
+                  left: 0,
+                  right: 0,
+                  marginTop: "4px",
+                  backgroundColor: "var(--surface-color)",
+                  border: "1px solid var(--surface-border)",
+                  borderRadius: "8px",
+                  boxShadow: "0 8px 24px rgba(0,0,0,0.25)",
+                  zIndex: 1000,
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  style={{
+                    padding: "6px 12px",
+                    fontSize: "0.72rem",
+                    color: "var(--text-secondary)",
+                    backgroundColor: "var(--bg-secondary)",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                  }}
+                >
+                  <span>RECENT SEARCHES</span>
+                  <span
+                    style={{ cursor: "pointer", color: "var(--text-muted)" }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setRecentSearches([]);
+                      localStorage.removeItem("vexil_recent_searches");
+                    }}
+                  >
+                    Clear
+                  </span>
+                </div>
+                {recentSearches.map((item) => (
+                  <div
+                    key={item}
+                    className="menu-dropdown-item"
+                    onMouseDown={() => {
+                      setSearchQuery(item);
+                      handleSearch(undefined, item);
+                    }}
+                    style={{
+                      padding: "8px 12px",
+                      cursor: "pointer",
+                      fontSize: "0.85rem",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "8px",
+                    }}
+                  >
+                    <span style={{ opacity: 0.6 }}>🔍</span>
+                    <span>{item}</span>
+                  </div>
+                ))}
+              </div>
+            )}
         </form>
+
+        {savedSearches.length > 0 && (
+          <div
+            style={{
+              display: "flex",
+              gap: "6px",
+              flexWrap: "wrap",
+              padding: "4px 8px",
+              alignItems: "center",
+            }}
+          >
+            <span
+              style={{
+                fontSize: "0.7rem",
+                color: "var(--text-secondary)",
+                fontWeight: 600,
+              }}
+            >
+              SAVED:
+            </span>
+            {savedSearches.map((s) => (
+              <button
+                key={s}
+                onClick={() => {
+                  setSearchQuery(s);
+                  handleSearch(undefined, s);
+                }}
+                style={{
+                  fontSize: "0.72rem",
+                  padding: "2px 8px",
+                  borderRadius: "10px",
+                  border: "1px solid var(--surface-border)",
+                  backgroundColor:
+                    searchQuery === s
+                      ? "var(--brand-primary)"
+                      : "var(--surface-color)",
+                  color: searchQuery === s ? "#fff" : "var(--text-secondary)",
+                  cursor: "pointer",
+                }}
+              >
+                ★ {s}
+              </button>
+            ))}
+          </div>
+        )}
 
         <div className="toolbar-actions">
           <div className="toolbar-filters">
@@ -1019,7 +1315,7 @@ function App() {
             <button
               className="tool-btn"
               disabled={!visibleSelection}
-              onClick={handleDelete}
+              onClick={handleDeleteWithUndo}
             >
               <svg
                 viewBox="0 0 24 24"
@@ -1049,6 +1345,22 @@ function App() {
                 <line x1="14" y1="11" x2="14" y2="17"></line>
               </svg>
               Trash
+            </button>
+            <button
+              className="tool-btn"
+              onClick={() => setShowDuplicates(true)}
+              title="Find and clean up duplicate files"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+              Duplicates
             </button>
           </div>
         </div>
@@ -1131,18 +1443,74 @@ function App() {
       {/* 3. Main Content Grid */}
       <div className="main-content">
         {/* Results Panel (Left Side Now) */}
-        <ResultsTable
-          filteredResults={filteredResults}
-          browseSections={filteredBrowseSections}
-          isBrowsing={browsing}
-          selectedResult={visibleSelection}
-          setSelectedResult={setSelectedResult}
-          setContextMenu={setContextMenu}
-          searchTotal={searchTotal}
-          hasMore={searchTotal > results.length}
-          isLoadingMore={isLoadingMore}
-          onLoadMore={loadMore}
-        />
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            flex: 1,
+            minWidth: 0,
+            height: "100%",
+          }}
+        >
+          {selectedIds.size > 1 && (
+            <div
+              style={{
+                padding: "8px 16px",
+                backgroundColor: "var(--bg-secondary)",
+                borderBottom: "1px solid var(--surface-border)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                fontSize: "0.85rem",
+              }}
+            >
+              <span style={{ fontWeight: 600, color: "var(--text-primary)" }}>
+                {selectedIds.size} files selected
+              </span>
+              <div style={{ display: "flex", gap: "8px" }}>
+                <button
+                  className="tool-btn"
+                  onClick={handleBulkCopy}
+                  style={{ padding: "4px 10px", fontSize: "0.8rem" }}
+                >
+                  Copy Paths
+                </button>
+                <button
+                  className="tool-btn"
+                  onClick={() => void handleBulkDelete()}
+                  style={{
+                    padding: "4px 10px",
+                    fontSize: "0.8rem",
+                    color: "#ef4444",
+                  }}
+                >
+                  Delete Selected
+                </button>
+                <button
+                  className="tool-btn"
+                  onClick={() => setSelectedIds(new Set())}
+                  style={{ padding: "4px 10px", fontSize: "0.8rem" }}
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+          )}
+          <ResultsTable
+            filteredResults={filteredResults}
+            browseSections={filteredBrowseSections}
+            isBrowsing={browsing}
+            selectedResult={visibleSelection}
+            setSelectedResult={setSelectedResult}
+            setContextMenu={setContextMenu}
+            searchTotal={searchTotal}
+            hasMore={searchTotal > results.length}
+            isLoadingMore={isLoadingMore}
+            onLoadMore={loadMore}
+            selectedIds={selectedIds}
+            onToggleSelect={handleToggleSelect}
+          />
+        </div>
 
         {/* Right Sidebar */}
         <aside className="right-sidebar">
@@ -1765,12 +2133,75 @@ function App() {
             style={{ color: "#ef4444" }}
             onClick={() => {
               setSelectedResult(contextMenu.result);
-              void handleDelete();
+              void handleDeleteWithUndo();
               setContextMenu(null);
             }}
           >
             Delete File
           </div>
+        </div>
+      )}
+
+      {/* Duplicate Finder Modal */}
+      <DuplicateFinderModal
+        isOpen={showDuplicates}
+        onClose={() => setShowDuplicates(false)}
+        onOpen={(path) => {
+          invoke("open_file_external", { path }).catch(console.error);
+        }}
+        onReveal={openInExplorer}
+        onDelete={async (path) => {
+          await invoke("delete_file", { path });
+        }}
+      />
+
+      {/* Undo Delete Toast */}
+      {undoToast && (
+        <div
+          style={{
+            position: "fixed",
+            bottom: "24px",
+            right: "24px",
+            backgroundColor: "var(--surface-color)",
+            border: "1px solid var(--surface-border)",
+            borderRadius: "8px",
+            padding: "10px 16px",
+            boxShadow: "0 6px 20px rgba(0, 0, 0, 0.3)",
+            display: "flex",
+            alignItems: "center",
+            gap: "12px",
+            zIndex: 9999,
+            fontSize: "0.85rem",
+            color: "var(--text-primary)",
+          }}
+        >
+          <span>Moved &ldquo;{undoToast.name}&rdquo; to Trash</span>
+          <button
+            onClick={() => void handleUndoDelete()}
+            style={{
+              padding: "4px 10px",
+              backgroundColor: "var(--accent-color, #3b82f6)",
+              color: "#ffffff",
+              border: "none",
+              borderRadius: "4px",
+              fontWeight: 500,
+              cursor: "pointer",
+            }}
+          >
+            Undo
+          </button>
+          <button
+            onClick={() => setUndoToast(null)}
+            style={{
+              background: "transparent",
+              border: "none",
+              color: "var(--text-secondary)",
+              cursor: "pointer",
+              padding: "2px",
+            }}
+          >
+            ✕
+          </button>
         </div>
       )}
 

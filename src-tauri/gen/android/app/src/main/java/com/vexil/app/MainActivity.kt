@@ -144,6 +144,16 @@ class MainActivity : TauriActivity() {
       runOnUiThread { folderPicker.launch(null) }
     }
 
+    @JavascriptInterface
+    fun startBackgroundIndexing() {
+      VexilIndexingService.start(this@MainActivity)
+    }
+
+    @JavascriptInterface
+    fun stopBackgroundIndexing() {
+      VexilIndexingService.stop(this@MainActivity)
+    }
+
     /**
      * Opens [path] in whatever app handles its type (video player, image viewer,
      * PDF reader, ...).

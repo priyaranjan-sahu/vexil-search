@@ -1237,6 +1237,115 @@ async fn get_file_preview(app_handle: AppHandle, path: String) -> Result<FilePre
     })
 }
 
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct DuplicateFile {
+    pub id: i64,
+    pub path: String,
+    pub title: String,
+    pub size: u64,
+    pub modified: i64,
+    pub category: String,
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct DuplicateGroup {
+    pub hash: String,
+    pub size: u64,
+    pub wasted_bytes: u64,
+    pub files: Vec<DuplicateFile>,
+}
+
+fn hash_file_bytes(path: &std::path::Path) -> Result<u64, std::io::Error> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::Hasher;
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = DefaultHasher::new();
+    let mut buffer = [0u8; 64 * 1024];
+
+    loop {
+        let n = file.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        hasher.write(&buffer[..n]);
+    }
+    Ok(hasher.finish())
+}
+
+#[tauri::command]
+async fn find_duplicates(app_handle: AppHandle) -> Result<Vec<DuplicateGroup>, String> {
+    let pool = app_handle.state::<db::DbPool>();
+    let conn = pool.get().map_err(|_| "DB pool error".to_string())?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT m.id, m.path, i.title, m.size, m.modified, m.category
+             FROM file_metadata m
+             JOIN file_index i ON m.id = i.id
+             WHERE m.size > 0
+               AND m.category != 'Folder'
+               AND m.size IN (
+                 SELECT size FROM file_metadata WHERE size > 0 AND category != 'Folder' GROUP BY size HAVING count(*) > 1
+               )
+             ORDER BY m.size DESC",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let candidates = stmt
+        .query_map([], |row| {
+            Ok(DuplicateFile {
+                id: row.get(0)?,
+                path: row.get(1)?,
+                title: row.get(2)?,
+                size: row.get::<_, i64>(3)? as u64,
+                modified: row.get(4)?,
+                category: row.get(5)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<DuplicateFile>, rusqlite::Error>>()
+        .map_err(|e| e.to_string())?;
+
+    let mut by_size: std::collections::HashMap<u64, Vec<DuplicateFile>> = std::collections::HashMap::new();
+    for file in candidates {
+        by_size.entry(file.size).or_default().push(file);
+    }
+
+    let mut duplicate_groups: Vec<DuplicateGroup> = Vec::new();
+
+    for (size, files) in by_size {
+        if files.len() < 2 {
+            continue;
+        }
+
+        let mut by_hash: std::collections::HashMap<u64, Vec<DuplicateFile>> = std::collections::HashMap::new();
+        for file in files {
+            let p = std::path::Path::new(&file.path);
+            if let Ok(hash) = hash_file_bytes(p) {
+                by_hash.entry(hash).or_default().push(file);
+            }
+        }
+
+        for (hash_val, matching_files) in by_hash {
+            if matching_files.len() >= 2 {
+                let wasted = size * (matching_files.len() as u64 - 1);
+                duplicate_groups.push(DuplicateGroup {
+                    hash: format!("{:016x}", hash_val),
+                    size,
+                    wasted_bytes: wasted,
+                    files: matching_files,
+                });
+            }
+        }
+    }
+
+    duplicate_groups.sort_by(|a, b| b.wasted_bytes.cmp(&a.wasted_bytes));
+
+    Ok(duplicate_groups)
+}
+
 #[tauri::command]
 async fn get_index_stats(app_handle: AppHandle) -> Result<usize, String> {
     let pool = app_handle.state::<db::DbPool>();
@@ -1654,6 +1763,24 @@ mod tests {
         assert_eq!(super::parse_size_str("2kb"), Some(2048));
         assert_eq!(super::parse_size_str("5mb"), Some(5242880));
         assert_eq!(super::parse_size_str("1gb"), Some(1073741824));
+    }
+
+    #[test]
+    fn hashes_duplicate_files_identically() {
+        let dir = tempfile::tempdir().unwrap();
+        let path_a = dir.path().join("a.txt");
+        let path_b = dir.path().join("b.txt");
+        let path_c = dir.path().join("c.txt");
+        std::fs::write(&path_a, b"identical duplicate content 123").unwrap();
+        std::fs::write(&path_b, b"identical duplicate content 123").unwrap();
+        std::fs::write(&path_c, b"different content 456").unwrap();
+
+        let hash_a = super::hash_file_bytes(&path_a).unwrap();
+        let hash_b = super::hash_file_bytes(&path_b).unwrap();
+        let hash_c = super::hash_file_bytes(&path_c).unwrap();
+
+        assert_eq!(hash_a, hash_b);
+        assert_ne!(hash_a, hash_c);
     }
 
     #[test]
@@ -2168,6 +2295,26 @@ pub fn run() {
                         roots_to_watch.push(doc_dir);
                     }
                 }
+                if let Some(desk_dir) = dirs::desktop_dir() {
+                    if !roots_to_watch.contains(&desk_dir) {
+                        roots_to_watch.push(desk_dir);
+                    }
+                }
+                if let Some(pic_dir) = dirs::picture_dir() {
+                    if !roots_to_watch.contains(&pic_dir) {
+                        roots_to_watch.push(pic_dir);
+                    }
+                }
+                if let Some(vid_dir) = dirs::video_dir() {
+                    if !roots_to_watch.contains(&vid_dir) {
+                        roots_to_watch.push(vid_dir);
+                    }
+                }
+                if let Some(music_dir) = dirs::audio_dir() {
+                    if !roots_to_watch.contains(&music_dir) {
+                        roots_to_watch.push(music_dir);
+                    }
+                }
                 for r in mobile::raw_scan_roots(&app_handle) {
                     if !roots_to_watch.contains(&r) && r.is_dir() {
                         roots_to_watch.push(r);
@@ -2334,7 +2481,8 @@ pub fn run() {
             add_my_pick,
             remove_my_pick,
             cancel_indexing,
-            get_file_preview
+            get_file_preview,
+            find_duplicates
         ])
         .on_window_event(|window, event| if let WindowEvent::CloseRequested { api, .. } = event {
             let state = window.app_handle().state::<AppState>();

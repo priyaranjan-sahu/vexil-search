@@ -161,6 +161,8 @@ export const ResultsTable = ({
   hasMore = false,
   isLoadingMore = false,
   onLoadMore,
+  selectedIds,
+  onToggleSelect,
 }: {
   filteredResults: SearchResult[];
   selectedResult: SearchResult | null;
@@ -178,6 +180,8 @@ export const ResultsTable = ({
   hasMore?: boolean;
   isLoadingMore?: boolean;
   onLoadMore?: () => void;
+  selectedIds?: Set<number>;
+  onToggleSelect?: (result: SearchResult, isMulti: boolean) => void;
 }) => {
   const isSearching = useSearchStore((state) => state.isSearching);
   const sortBy = useSearchStore((state) => state.sortBy);
@@ -366,9 +370,19 @@ export const ResultsTable = ({
                       data-index={virtualRow.index}
                       ref={virtualizer.measureElement}
                       className={
-                        selectedResult?.id === result.id ? "selected" : ""
+                        selectedIds?.has(result.id) ||
+                        selectedResult?.id === result.id
+                          ? "selected"
+                          : ""
                       }
-                      onClick={() => setSelectedResult(result)}
+                      onClick={(e) => {
+                        if (onToggleSelect && (e.metaKey || e.ctrlKey)) {
+                          onToggleSelect(result, true);
+                        } else {
+                          if (onToggleSelect) onToggleSelect(result, false);
+                          setSelectedResult(result);
+                        }
+                      }}
                       onDoubleClick={() => openResult(result)}
                       onContextMenu={(e) => {
                         e.preventDefault();

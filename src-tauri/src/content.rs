@@ -83,15 +83,27 @@ pub fn should_index_content(ext: &str) -> bool {
             | "r"
             | "swift"
             | "dart"
+            | "odt"
+            | "ods"
+            | "odp"
+            | "rtf"
     )
 }
 
 pub fn extract_text(path: &Path, ext: &str) -> String {
     let ext = ext.to_lowercase();
     let text = match ext.as_str() {
-        "docx" | "pptx" | "xlsx" | "epub" => safe(|| {
+        "docx" | "pptx" | "xlsx" | "epub" | "odt" | "ods" | "odp" => safe(|| {
             let file = std::fs::File::open(path).map_err(|e| format!("open '{path:?}': {e}"))?;
             zip_text(file, &ext)
+        })
+        .unwrap_or_default(),
+        "rtf" => safe(|| {
+            use std::io::Read;
+            let file = std::fs::File::open(path).map_err(|e| format!("open '{path:?}': {e}"))?;
+            let mut buf = Vec::new();
+            file.take(MAX_TEXT_BYTES).read_to_end(&mut buf).map_err(|e| e.to_string())?;
+            Ok(rtf_text(&buf))
         })
         .unwrap_or_default(),
         "pdf" => {
@@ -121,9 +133,10 @@ pub fn extract_text(path: &Path, ext: &str) -> String {
 pub fn extract_text_from_bytes(bytes: &[u8], ext: &str) -> String {
     let ext = ext.to_lowercase();
     let text = match ext.as_str() {
-        "docx" | "pptx" | "xlsx" | "epub" => {
+        "docx" | "pptx" | "xlsx" | "epub" | "odt" | "ods" | "odp" => {
             safe(|| zip_text(Cursor::new(bytes), &ext)).unwrap_or_default()
         }
+        "rtf" => safe(|| Ok(rtf_text(bytes))).unwrap_or_default(),
         "pdf" => {
             if bytes.len() as u64 > MAX_SOURCE_BYTES {
                 String::new()
@@ -289,8 +302,55 @@ fn zip_text<R: Read + Seek>(reader: R, ext: &str) -> Result<String, String> {
             }
             Ok(out)
         }
+        "odt" | "ods" | "odp" => {
+            let xml = read_entry(&mut archive, "content.xml")?;
+            Ok(collect_text(
+                &xml,
+                &["p", "h", "span", "table-cell"],
+                &["p", "h", "table-row"],
+                &[],
+            ))
+        }
         _ => Err(format!("unsupported zip text format: {ext}")),
     }
+}
+
+fn rtf_text(bytes: &[u8]) -> String {
+    let mut out = String::new();
+    let mut in_control = false;
+    let mut group_depth: i32 = 0;
+    let mut skip_destination = false;
+    let mut dest_depth = 0;
+
+    for &b in bytes.iter().take(MAX_TEXT_BYTES as usize) {
+        if b == b'{' {
+            group_depth += 1;
+            in_control = false;
+        } else if b == b'}' {
+            if skip_destination && group_depth <= dest_depth {
+                skip_destination = false;
+            }
+            group_depth = group_depth.saturating_sub(1);
+            in_control = false;
+        } else if b == b'\\' {
+            in_control = true;
+        } else if in_control {
+            if b.is_ascii_whitespace() {
+                in_control = false;
+            } else if b == b'*' {
+                skip_destination = true;
+                dest_depth = group_depth;
+            }
+        } else if !skip_destination && !in_control && (b >= 32 || b == b'\n' || b == b'\t') {
+            let ch = b as char;
+            if out.len() < MAX_EXTRACT_CHARS {
+                out.push(ch);
+            } else {
+                break;
+            }
+        }
+    }
+    out
 }
 
 fn archive_names<R: Read + Seek>(
@@ -586,5 +646,21 @@ mod tests {
         let text = extract_text_from_bytes(&bytes, "txt");
         assert!(text.contains("SAF_UTF16_MARKER"), "got: {text:?}");
         assert!(!text.contains('\u{0}'));
+    }
+
+    #[test]
+    fn extracts_odt_text() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?><office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:body><office:text><text:p>ODT_OPEN_OFFICE_MARKER</text:p></office:text></office:body></office:document-content>"#;
+        let zip = make_zip(&[("content.xml", xml)]);
+        let text = extract_text_from_bytes(&zip, "odt");
+        assert!(text.contains("ODT_OPEN_OFFICE_MARKER"), "got: {text:?}");
+    }
+
+    #[test]
+    fn extracts_rtf_text() {
+        let rtf_data = br#"{\rtf1\ansi\deff0 {\fonttbl {\f0 Courier;}}\f0\fs24 Hello RTF_DOCUMENT_MARKER world!\par}"#;
+        let text = extract_text_from_bytes(rtf_data, "rtf");
+        assert!(text.contains("RTF_DOCUMENT_MARKER"), "got: {text:?}");
+        assert!(!text.contains("fonttbl"), "got: {text:?}");
     }
 }
