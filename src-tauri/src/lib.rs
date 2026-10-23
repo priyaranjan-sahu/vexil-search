@@ -643,7 +643,17 @@ async fn search_files(
         let sql = format!(
             "
             SELECT file_index.rowid, file_index.title, file_index.path,
-                   COALESCE(snippet(file_index, 0, '<b>', '</b>', '...', 10), snippet(file_index, 1, '<b>', '</b>', '...', 10)),
+                   COALESCE(
+                       -- Column -1 makes FTS5 pick whichever column actually
+                       -- matches (title, path, or body text) with the densest
+                       -- match window. Explicit column snippets are useless
+                       -- here: snippet(col) returns NULL only for out-of-range
+                       -- columns, so a title snippet (unhighlighted filler) would
+                       -- always shadow a content-column match that the user is
+                       -- actually looking for.
+                       snippet(file_index, -1, '<b>', '</b>', '...', 12),
+                       'The file matched your search'
+                   ),
                    bm25(file_index),
                    m.size, m.mtime, m.category
             FROM file_index
@@ -1119,6 +1129,42 @@ mod tests {
             "Code".to_string(),
         ]);
         assert_eq!(ordered, vec!["Music", "Images", "Code"]);
+    }
+
+    #[test]
+    fn fts_snippet_highlights_a_match_inside_file_content() {
+        let dir = tempdir().unwrap();
+        let conn = db::setup_db(&dir.path().to_path_buf()).unwrap();
+
+        // Title and path carry none of the query terms; only the body text
+        // does. The snippet must therefore come from the content column.
+        conn.execute(
+            "INSERT INTO file_index (title, path, content)
+             VALUES ('meeting notes', 'C:/docs/meeting notes.txt',
+                     'meeting notes C:/docs/meeting notes.txt invoice total was 42 dollars and the client asked to confirm the final invoice amount before Friday')",
+            [],
+        )
+        .unwrap();
+
+        let sql = "SELECT file_index.rowid,
+               COALESCE(
+                   snippet(file_index, -1, '<b>', '</b>', '...', 12),
+                   'The file matched your search'
+               )
+           FROM file_index
+           WHERE file_index MATCH ?1
+           ORDER BY rank, file_index.rowid";
+        let snippet: String = conn
+            .prepare(sql)
+            .unwrap()
+            .query_row(rusqlite::params!["\"invoice\""], |row| row.get::<_, String>(1))
+            .unwrap();
+
+        assert!(snippet.contains("<b>invoice</b>"), "got: {snippet}");
+        // A leading ellipsis means the window starts mid-text, i.e. inside the
+        // body around the match. A snippet window anchored at the file title
+        // would produce no ellipsis before the first token.
+        assert!(snippet.starts_with("..."), "got: {snippet}");
     }
 
     #[test]
