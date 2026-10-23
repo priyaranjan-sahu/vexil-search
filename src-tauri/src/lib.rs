@@ -573,6 +573,41 @@ async fn start_indexing(
     Ok("Indexing started in the background".to_string())
 }
 
+fn parse_fts_query(query: &str, category_is_all: bool) -> (String, Vec<String>, String) {
+    let alnum_len = |term: &str| term.chars().filter(|c| c.is_alphanumeric()).count();
+    let mut fts_terms: Vec<String> = Vec::new();
+    let mut short_terms: Vec<String> = Vec::new();
+
+    for term in query.split_whitespace() {
+        if alnum_len(term) >= 3 {
+            let safe_term = term.replace(['"', '*', '(', ')', '+', '-', '~'], "");
+            if !safe_term.is_empty() {
+                fts_terms.push(format!("\"{}\"", safe_term));
+            }
+        } else {
+            let escaped = term
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            if !escaped.is_empty() {
+                short_terms.push(format!("%{}%", escaped));
+            }
+        }
+    }
+
+    let fts_query = fts_terms.join(" AND ");
+    let mut short_filter_sql = String::new();
+    for i in 0..short_terms.len() {
+        let p_title = if category_is_all { 2 + i * 2 } else { 3 + i * 2 };
+        let p_path = p_title + 1;
+        short_filter_sql.push_str(&format!(
+            " AND (file_index.title LIKE ?{p_title} ESCAPE '\\' OR file_index.path LIKE ?{p_path} ESCAPE '\\')"
+        ));
+    }
+
+    (fts_query, short_terms, short_filter_sql)
+}
+
 #[tauri::command]
 async fn search_files(
     app_handle: AppHandle,
@@ -718,6 +753,8 @@ async fn search_files(
         } else {
             "AND m.category = ?2"
         };
+        let (fts_query, short_terms, short_filter_sql) =
+            parse_fts_query(&query, category == "All");
         let sql = format!(
             "
             SELECT file_index.rowid, file_index.title, file_index.path,
@@ -732,42 +769,36 @@ async fn search_files(
                        snippet(file_index, -1, '<b>', '</b>', '...', 12),
                        'The file matched your search'
                    ),
-                   bm25(file_index),
+                   bm25(file_index, 10.0, 5.0, 1.0),
                    m.size, m.mtime, m.category
             FROM file_index
             LEFT JOIN file_metadata m ON file_index.path = m.path
-            WHERE file_index MATCH ?1 {}
-            ORDER BY rank, file_index.rowid
+            WHERE file_index MATCH ?1 {} {}
+            ORDER BY bm25(file_index, 10.0, 5.0, 1.0), file_index.rowid
             LIMIT {limit} OFFSET {offset}
         ",
-            cat_filter_fts
+            cat_filter_fts, short_filter_sql
         );
 
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-
-        // SQLite FTS syntax for prefix search; quote terms to avoid syntax
-        // errors on special characters and drop tokens trigram cannot match.
-        let terms: Vec<String> = query
-            .split_whitespace()
-            .filter(|term| alnum_len(term) >= 3)
-            .map(|term| {
-                let safe_term = term.replace(['"', '*', '(', ')', '+', '-', '~'], "");
-                format!("\"{}\"", safe_term)
-            })
-            .collect();
-        let fts_query = terms.join(" AND ");
 
         let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![&fts_query];
         if category != "All" {
             params_vec.push(&category);
         }
+        for st in &short_terms {
+            params_vec.push(st);
+            params_vec.push(st);
+        }
 
         let results = stmt
             .query_map(rusqlite::params_from_iter(params_vec), |row| {
                 let bm25: f64 = row.get::<_, f64>(4).unwrap_or(0.0);
-                // Trigram tokenizer produces different BM25 ranges than porter.
+                // Lower (more negative) BM25 indicates a stronger match.
+                // Scale score monotonically into [1, 100].
+                let score = (-bm25).max(0.0);
                 let relevance =
-                    (100.0_f64 / (1.0_f64 + bm25.abs() * 0.15_f64)).clamp(1.0_f64, 100.0_f64) as u8;
+                    ((score / (score + 2.0)) * 100.0).clamp(1.0, 100.0) as u8;
                 Ok(SearchResult {
                     id: row.get::<_, i64>(0)?,
                     title: row.get::<_, String>(1)?,
@@ -880,25 +911,22 @@ async fn search_count(
         } else {
             "AND m.category = ?2"
         };
+        let (fts_query, short_terms, short_filter_sql) =
+            parse_fts_query(&query, category == "All");
         let sql = format!(
             "SELECT COUNT(*) FROM file_index \
              LEFT JOIN file_metadata m ON file_index.path = m.path \
-             WHERE file_index MATCH ?1 {}",
-            cat_filter_fts
+             WHERE file_index MATCH ?1 {} {}",
+            cat_filter_fts, short_filter_sql
         );
-        let terms: Vec<String> = query
-            .split_whitespace()
-            .filter(|term| alnum_len(term) >= 3)
-            .map(|term| {
-                let safe_term = term.replace(['"', '*', '(', ')', '+', '-', '~'], "");
-                format!("\"{}\"", safe_term)
-            })
-            .collect();
-        let fts_query = terms.join(" AND ");
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![&fts_query];
         if category != "All" {
             params_vec.push(&category);
+        }
+        for st in &short_terms {
+            params_vec.push(st);
+            params_vec.push(st);
         }
         stmt.query_row(rusqlite::params_from_iter(params_vec), |row| {
             row.get::<_, i64>(0)
@@ -1256,6 +1284,53 @@ mod tests {
         // body around the match. A snippet window anchored at the file title
         // would produce no ellipsis before the first token.
         assert!(snippet.starts_with("..."), "got: {snippet}");
+    }
+
+    #[test]
+    fn fts_bm25_weights_favor_title_over_content() {
+        let dir = tempdir().unwrap();
+        let conn = db::setup_db(&dir.path().to_path_buf()).unwrap();
+
+        // File A: "budget" in title
+        conn.execute(
+            "INSERT INTO file_index (title, path, content)
+             VALUES ('quarterly_budget.xlsx', 'C:/docs/quarterly_budget.xlsx', 'quarterly_budget.xlsx C:/docs/quarterly_budget.xlsx generic numbers and tables')",
+            [],
+        )
+        .unwrap();
+
+        // File B: "budget" repeated 15 times in content only
+        let repeated = "budget ".repeat(15);
+        conn.execute(
+            "INSERT INTO file_index (title, path, content)
+             VALUES ('random_log.txt', 'C:/docs/random_log.txt', ?1)",
+            rusqlite::params![format!("random_log.txt C:/docs/random_log.txt {repeated}")],
+        )
+        .unwrap();
+
+        let sql = "SELECT file_index.title, bm25(file_index, 10.0, 5.0, 1.0)
+                   FROM file_index
+                   WHERE file_index MATCH '\"budget\"'
+                   ORDER BY bm25(file_index, 10.0, 5.0, 1.0), file_index.rowid";
+        let mut stmt = conn.prepare(sql).unwrap();
+        let titles: Vec<String> = stmt
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+
+        assert_eq!(titles.len(), 2);
+        assert_eq!(titles[0], "quarterly_budget.xlsx");
+        assert_eq!(titles[1], "random_log.txt");
+    }
+
+    #[test]
+    fn fts_preserves_short_token_filters() {
+        let (fts_query, short_terms, filter_sql) = super::parse_fts_query("report v1", true);
+        assert_eq!(fts_query, "\"report\"");
+        assert_eq!(short_terms, vec!["%v1%"]);
+        assert!(filter_sql.contains("LIKE ?2"));
+        assert!(filter_sql.contains("LIKE ?3"));
     }
 
     #[test]

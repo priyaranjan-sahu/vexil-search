@@ -31,6 +31,58 @@ pub fn should_index_content(ext: &str) -> bool {
             | "xlsx"
             | "pptx"
             | "epub"
+            | "py"
+            | "pyw"
+            | "ipynb"
+            | "go"
+            | "c"
+            | "cpp"
+            | "cc"
+            | "cxx"
+            | "h"
+            | "hpp"
+            | "hxx"
+            | "java"
+            | "kt"
+            | "kts"
+            | "scala"
+            | "cs"
+            | "html"
+            | "htm"
+            | "css"
+            | "scss"
+            | "sass"
+            | "less"
+            | "xml"
+            | "svg"
+            | "vue"
+            | "svelte"
+            | "yaml"
+            | "yml"
+            | "toml"
+            | "ini"
+            | "conf"
+            | "env"
+            | "properties"
+            | "sql"
+            | "sh"
+            | "bash"
+            | "zsh"
+            | "bat"
+            | "cmd"
+            | "ps1"
+            | "psm1"
+            | "fish"
+            | "rst"
+            | "adoc"
+            | "tex"
+            | "log"
+            | "rb"
+            | "php"
+            | "lua"
+            | "r"
+            | "swift"
+            | "dart"
     )
 }
 
@@ -508,6 +560,9 @@ mod tests {
         assert!(should_index_content("DOCX"));
         assert!(should_index_content("pdf"));
         assert!(should_index_content("txt"));
+        assert!(should_index_content("py"));
+        assert!(should_index_content("yaml"));
+        assert!(should_index_content("go"));
         assert!(!should_index_content("png"));
         assert!(!should_index_content("exe"));
     }
