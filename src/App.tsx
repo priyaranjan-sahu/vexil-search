@@ -56,6 +56,9 @@ function App() {
     setActiveSizeFilter,
     activeDateFilter,
     setActiveDateFilter,
+    sortBy,
+    sortOrder,
+    setSort,
     activeMenu,
     setActiveMenu,
     selectedResult,
@@ -894,6 +897,24 @@ function App() {
               <option value="Today">Today</option>
               <option value="This Week">This Week</option>
               <option value="This Month">This Month</option>
+            </select>
+            <select
+              className="advanced-filter-select"
+              value={`${sortBy}:${sortOrder}`}
+              onChange={(e) => {
+                const [sb, so] = e.target.value.split(":");
+                setSort(sb, so as "asc" | "desc");
+              }}
+              title="Sort by"
+              aria-label="Sort by"
+            >
+              <option value="relevance:desc">Sort: Relevance</option>
+              <option value="modified:desc">Sort: Newest First</option>
+              <option value="modified:asc">Sort: Oldest First</option>
+              <option value="size:desc">Sort: Largest First</option>
+              <option value="size:asc">Sort: Smallest First</option>
+              <option value="name:asc">Sort: Name (A-Z)</option>
+              <option value="name:desc">Sort: Name (Z-A)</option>
             </select>
           </div>
 

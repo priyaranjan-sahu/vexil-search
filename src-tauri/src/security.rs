@@ -47,11 +47,14 @@ impl AllowedRoots {
         // 3. Canonicalize (resolves symlinks, validates existence)
         let mut canon = abs.canonicalize().map_err(|_| SecurityError::InvalidPath)?;
 
-        // Strip Windows UNC prefix if present
+        // Strip Windows UNC prefix if present, but preserve it for long paths
+        // (>= 240 chars) so Win32 APIs do not fail with MAX_PATH buffer overflows.
         if cfg!(windows) {
             let canon_str = canon.to_string_lossy().to_string();
             if let Some(stripped) = canon_str.strip_prefix(r"\\?\") {
-                canon = PathBuf::from(stripped);
+                if stripped.len() < 240 {
+                    canon = PathBuf::from(stripped);
+                }
             }
         }
 

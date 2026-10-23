@@ -179,3 +179,35 @@ describe("search pagination (2.7)", () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 });
+
+describe("search sorting", () => {
+  it("defaults to sorting by relevance descending", async () => {
+    const useSearchStore = await freshStore();
+    expect(useSearchStore.getState().sortBy).toBe("relevance");
+    expect(useSearchStore.getState().sortOrder).toBe("desc");
+  });
+
+  it("updates sort order and triggers search if query is non-empty", async () => {
+    invoke.mockResolvedValue([pick(1)]);
+    const useSearchStore = await freshStore();
+    useSearchStore.setState({ query: "docs" });
+
+    useSearchStore.getState().setSort("name");
+    expect(useSearchStore.getState().sortBy).toBe("name");
+    expect(useSearchStore.getState().sortOrder).toBe("asc");
+
+    // Toggling the same column flips the direction
+    useSearchStore.getState().setSort("name");
+    expect(useSearchStore.getState().sortOrder).toBe("desc");
+
+    expect(
+      invoke.mock.calls.some(
+        ([cmd, args]) =>
+          cmd === "search_files" &&
+          (args as { sortBy?: string; sortOrder?: string }).sortBy === "name" &&
+          (args as { sortBy?: string; sortOrder?: string }).sortOrder ===
+            "desc",
+      ),
+    ).toBe(true);
+  });
+});

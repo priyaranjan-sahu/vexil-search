@@ -149,12 +149,51 @@ fn platform_machine_id() -> Option<String> {
     None
 }
 
+fn load_or_create_device_seed() -> Option<String> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(cfg) = dirs::config_dir() {
+        candidates.push(cfg.join("vexil").join(".device_seed"));
+    }
+    if let Some(data) = dirs::data_dir() {
+        candidates.push(data.join("vexil").join(".device_seed"));
+    }
+    #[cfg(target_os = "android")]
+    candidates.push(PathBuf::from("/data/data/com.vexil.app/files/.device_seed"));
+
+    for candidate in &candidates {
+        if let Ok(existing) = std::fs::read_to_string(candidate) {
+            let trimmed = existing.trim().to_string();
+            if !trimmed.is_empty() {
+                return Some(trimmed);
+            }
+        }
+    }
+
+    let mut rng = rand::thread_rng();
+    let r1: u64 = rand::Rng::gen(&mut rng);
+    let r2: u64 = rand::Rng::gen(&mut rng);
+    let new_seed = format!("{r1:016x}{r2:016x}");
+
+    for candidate in &candidates {
+        if let Some(parent) = candidate.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if std::fs::write(candidate, &new_seed).is_ok() {
+            return Some(new_seed);
+        }
+    }
+    None
+}
+
 /// Stable device identifier used for license binding. Cached per process.
 pub fn device_id() -> String {
     static ID: OnceLock<String> = OnceLock::new();
     ID.get_or_init(|| {
         if let Some(id) = platform_machine_id() {
             return stable_hash_hex(&format!("vexil:{id}"));
+        }
+        if let Some(seed) = load_or_create_device_seed() {
+            return stable_hash_hex(&format!("vexil-seed:{seed}"));
         }
         let fallback = format!(
             "{}|{}|{}",

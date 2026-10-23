@@ -180,6 +180,9 @@ export const ResultsTable = ({
   onLoadMore?: () => void;
 }) => {
   const isSearching = useSearchStore((state) => state.isSearching);
+  const sortBy = useSearchStore((state) => state.sortBy);
+  const sortOrder = useSearchStore((state) => state.sortOrder);
+  const setSort = useSearchStore((state) => state.setSort);
 
   const parentRef = useRef<HTMLDivElement>(null);
 
@@ -305,10 +308,32 @@ export const ResultsTable = ({
                     backgroundColor: "var(--surface-color)",
                   }}
                 >
-                  <th>Name</th>
+                  <th
+                    style={{ cursor: "pointer", userSelect: "none" }}
+                    onClick={() => setSort("name")}
+                    title="Sort by Name"
+                  >
+                    Name{" "}
+                    {sortBy === "name" ? (sortOrder === "asc" ? "▲" : "▼") : ""}
+                  </th>
                   <th>Path</th>
                   <th>Snippet</th>
-                  <th style={{ textAlign: "right" }}>Relevance</th>
+                  <th
+                    style={{
+                      textAlign: "right",
+                      cursor: "pointer",
+                      userSelect: "none",
+                    }}
+                    onClick={() => setSort("relevance")}
+                    title="Sort by Relevance"
+                  >
+                    Relevance{" "}
+                    {sortBy === "relevance"
+                      ? sortOrder === "asc"
+                        ? "▲"
+                        : "▼"
+                      : ""}
+                  </th>
                 </tr>
               </thead>
               <tbody>

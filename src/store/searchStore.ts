@@ -63,7 +63,9 @@ interface SearchState {
   activeMenu: string | null;
   runInBackground: boolean;
 
-  // Actions
+  sortBy: string;
+  sortOrder: "asc" | "desc";
+  setSort: (sortBy: string, sortOrder?: "asc" | "desc") => void;
   setQuery: (query: string) => void;
   setResults: (results: SearchResult[]) => void;
   setIsSearching: (isSearching: boolean) => void;
@@ -130,7 +132,27 @@ export const useSearchStore = create<SearchState>()(
       showTrash: false,
       runInBackground: false,
       activeMenu: null,
+      sortBy: "relevance",
+      sortOrder: "desc",
 
+      setSort: (sortBy, sortOrder) => {
+        const currentSortBy = get().sortBy;
+        const currentSortOrder = get().sortOrder;
+        const resolvedOrder =
+          sortOrder ??
+          (currentSortBy === sortBy
+            ? currentSortOrder === "asc"
+              ? "desc"
+              : "asc"
+            : sortBy === "name"
+              ? "asc"
+              : "desc");
+        set({ sortBy, sortOrder: resolvedOrder });
+        const q = get().query;
+        if (q.trim()) {
+          void get().runSearch(q, true);
+        }
+      },
       setQuery: (query) => set({ query }),
       setActiveMenu: (activeMenu) => set({ activeMenu }),
       setResults: (results) => set({ results, selectedResult: null }),
@@ -264,6 +286,8 @@ export const useSearchStore = create<SearchState>()(
             const results = await invoke<SearchResult[]>("search_files", {
               query,
               category: get().activeCategory,
+              sortBy: get().sortBy,
+              sortOrder: get().sortOrder,
             });
             if (searchSeq !== seq) return;
             set({ results, isSearching: false, selectedResult: null });
@@ -295,8 +319,15 @@ export const useSearchStore = create<SearchState>()(
         }
       },
       loadMore: async () => {
-        const { query, results, activeCategory, isLoadingMore, searchTotal } =
-          get();
+        const {
+          query,
+          results,
+          activeCategory,
+          isLoadingMore,
+          searchTotal,
+          sortBy,
+          sortOrder,
+        } = get();
         if (!query.trim() || isLoadingMore || results.length >= searchTotal) {
           return;
         }
@@ -308,6 +339,8 @@ export const useSearchStore = create<SearchState>()(
             category: activeCategory,
             limit: 50,
             offset: results.length,
+            sortBy,
+            sortOrder,
           });
           // A newer search supersedes this page; drop the stale response.
           if (searchSeq !== seq) return;

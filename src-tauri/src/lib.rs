@@ -615,6 +615,8 @@ async fn search_files(
     category: String,
     limit: Option<i64>,
     offset: Option<i64>,
+    sort_by: Option<String>,
+    sort_order: Option<String>,
 ) -> Result<Vec<SearchResult>, String> {
     let trimmed_query = query.trim();
     if trimmed_query.is_empty() {
@@ -646,6 +648,37 @@ async fn search_files(
         "AND m.category = ?3"
     };
 
+    let sort_desc = match sort_order.as_deref() {
+        Some("asc") | Some("ASC") => false,
+        _ => true,
+    };
+
+    let order_sql = match sort_by.as_deref() {
+        Some("modified") | Some("date") => {
+            if sort_desc { "ORDER BY m.mtime DESC, f.rowid" } else { "ORDER BY m.mtime ASC, f.rowid" }
+        }
+        Some("size") => {
+            if sort_desc { "ORDER BY m.size DESC, f.rowid" } else { "ORDER BY m.size ASC, f.rowid" }
+        }
+        Some("name") | Some("title") => {
+            if sort_desc { "ORDER BY f.title COLLATE NOCASE DESC, f.rowid" } else { "ORDER BY f.title COLLATE NOCASE ASC, f.rowid" }
+        }
+        _ => "ORDER BY f.rowid",
+    };
+
+    let order_fts_sql = match sort_by.as_deref() {
+        Some("modified") | Some("date") => {
+            if sort_desc { "ORDER BY m.mtime DESC, file_index.rowid" } else { "ORDER BY m.mtime ASC, file_index.rowid" }
+        }
+        Some("size") => {
+            if sort_desc { "ORDER BY m.size DESC, file_index.rowid" } else { "ORDER BY m.size ASC, file_index.rowid" }
+        }
+        Some("name") | Some("title") => {
+            if sort_desc { "ORDER BY file_index.title COLLATE NOCASE DESC, file_index.rowid" } else { "ORDER BY file_index.title COLLATE NOCASE ASC, file_index.rowid" }
+        }
+        _ => "ORDER BY bm25(file_index, 10.0, 5.0, 1.0), file_index.rowid",
+    };
+
     if short_query {
         let sql = format!(
             "
@@ -656,10 +689,10 @@ async fn search_files(
             FROM file_index f
             LEFT JOIN file_metadata m ON f.path = m.path
             WHERE (f.path LIKE ?1 ESCAPE '\\' OR f.title LIKE ?2 ESCAPE '\\') {}
-            ORDER BY f.rowid
+            {}
             LIMIT {limit} OFFSET {offset}
         ",
-            cat_filter
+            cat_filter, order_sql
         );
         // A user-typed `%` or `_` is a literal, not a wildcard: escape the LIKE
         // metacharacters (and the escape char itself) so the short query means
@@ -711,10 +744,10 @@ async fn search_files(
             FROM file_index f
             LEFT JOIN file_metadata m ON f.path = m.path
             WHERE (f.path REGEXP ?1 OR f.title REGEXP ?2) {}
-            ORDER BY f.rowid
+            {}
             LIMIT {limit} OFFSET {offset}
         ",
-            cat_filter
+            cat_filter, order_sql
         );
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
 
@@ -774,10 +807,10 @@ async fn search_files(
             FROM file_index
             LEFT JOIN file_metadata m ON file_index.path = m.path
             WHERE file_index MATCH ?1 {} {}
-            ORDER BY bm25(file_index, 10.0, 5.0, 1.0), file_index.rowid
+            {}
             LIMIT {limit} OFFSET {offset}
         ",
-            cat_filter_fts, short_filter_sql
+            cat_filter_fts, short_filter_sql, order_fts_sql
         );
 
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
@@ -1347,6 +1380,17 @@ mod tests {
     fn handles_empty_input() {
         assert!(order_browse_categories(Vec::new()).is_empty());
     }
+
+    #[test]
+    fn dangerous_executables_are_detected() {
+        assert!(super::is_dangerous_executable(std::path::Path::new("malware.exe")));
+        assert!(super::is_dangerous_executable(std::path::Path::new("script.bat")));
+        assert!(super::is_dangerous_executable(std::path::Path::new("command.ps1")));
+        assert!(super::is_dangerous_executable(std::path::Path::new("install.sh")));
+        assert!(!super::is_dangerous_executable(std::path::Path::new("document.pdf")));
+        assert!(!super::is_dangerous_executable(std::path::Path::new("photo.png")));
+        assert!(!super::is_dangerous_executable(std::path::Path::new("notes.txt")));
+    }
 }
 
 use sysinfo::Disks;
@@ -1461,9 +1505,12 @@ fn path_is_indexed(
     canonical: &str,
     raw: &str,
 ) -> rusqlite::Result<bool> {
+    fn unprefix(s: &str) -> &str {
+        s.strip_prefix(r"\\?\").unwrap_or(s)
+    }
     let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM file_metadata WHERE path = ?1 OR path = ?2",
-        params![canonical, raw],
+        "SELECT COUNT(*) FROM file_metadata WHERE path = ?1 OR path = ?2 OR path = ?3 OR path = ?4",
+        params![canonical, raw, unprefix(canonical), unprefix(raw)],
         |row| row.get(0),
     )?;
     Ok(count > 0)
@@ -1583,9 +1630,44 @@ async fn open_in_explorer(app_handle: AppHandle, path: String) -> Result<String,
 /// FileProvider/`ACTION_VIEW` plumbing, so this command only has to serve
 /// desktop and iOS; `openResult` in the frontend prefers the bridge when it is
 /// present.
+fn is_dangerous_executable(path: &std::path::Path) -> bool {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_lowercase())
+        .unwrap_or_default();
+    matches!(
+        ext.as_str(),
+        "exe"
+            | "msi"
+            | "bat"
+            | "cmd"
+            | "com"
+            | "scr"
+            | "pif"
+            | "vbs"
+            | "vbe"
+            | "wsf"
+            | "wsh"
+            | "ps1"
+            | "psm1"
+            | "sh"
+            | "bash"
+    )
+}
+
 #[tauri::command]
-async fn open_file_external(app: AppHandle, path: String) -> Result<String, String> {
+async fn open_file_external(
+    app: AppHandle,
+    path: String,
+    allow_execute: Option<bool>,
+) -> Result<String, String> {
     let valid_path = open_target_path(&app, &path)?;
+    #[cfg(desktop)]
+    if is_dangerous_executable(&valid_path) && !allow_execute.unwrap_or(false) {
+        opener::reveal(&valid_path).map_err(|e| e.to_string())?;
+        return Ok("Revealed executable safely in file explorer".to_string());
+    }
     open_with_default_app(&app, &valid_path)
 }
 
@@ -1787,13 +1869,22 @@ pub fn run() {
                     Err(_) => return,
                 };
 
+                let mut roots_to_watch: Vec<PathBuf> = Vec::new();
                 if let Some(dl_dir) = dirs::download_dir() {
-                    let _ = watcher.watch(&dl_dir, RecursiveMode::Recursive);
+                    roots_to_watch.push(dl_dir);
                 }
-                // Watch every default scan root, not just Downloads: a file that
-                // lands in Documents should show up in Live Radar too.
                 if let Some(doc_dir) = dirs::document_dir() {
-                    let _ = watcher.watch(&doc_dir, RecursiveMode::Recursive);
+                    if !roots_to_watch.contains(&doc_dir) {
+                        roots_to_watch.push(doc_dir);
+                    }
+                }
+                for r in mobile::raw_scan_roots(&app_handle) {
+                    if !roots_to_watch.contains(&r) && r.is_dir() {
+                        roots_to_watch.push(r);
+                    }
+                }
+                for root in &roots_to_watch {
+                    let _ = watcher.watch(root, RecursiveMode::Recursive);
                 }
 
                 let mut pending_paths = std::collections::HashSet::new();
