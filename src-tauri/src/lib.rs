@@ -52,6 +52,32 @@ fn is_junk_dir(name: &str) -> bool {
     )
 }
 
+/// True when the file is a cloud-storage placeholder (OneDrive / Dropbox
+/// "online-only"). Reading it would hydrate multi-gigabyte files over the
+/// network on the user's behalf, so content extraction must skip it. The file
+/// stays in the index by name/path; only its body text is deferred.
+#[cfg(target_os = "windows")]
+fn is_cloud_placeholder(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    is_cloud_placeholder_bits(metadata.file_attributes())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_cloud_placeholder(_metadata: &std::fs::Metadata) -> bool {
+    false
+}
+
+/// FILE_ATTRIBUTE_OFFLINE (0x1000), RECALL_ON_OPEN (0x40000) and
+/// RECALL_ON_DATA_ACCESS (0x400000) each mean "body is not on this disk";
+/// unrelated upper bits may be set together with them.
+#[cfg(target_os = "windows")]
+fn is_cloud_placeholder_bits(attrs: u32) -> bool {
+    const OFFLINE: u32 = 0x0000_1000;
+    const RECALL_ON_OPEN: u32 = 0x0004_0000;
+    const RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
+    attrs & (OFFLINE | RECALL_ON_OPEN | RECALL_ON_DATA_ACCESS) != 0
+}
+
 fn get_category(is_dir: bool, ext: &str) -> String {
     if is_dir {
         return "Folder".to_string();
@@ -227,11 +253,35 @@ async fn start_indexing(
 
             log::debug!("WalkBuilder initialized in {:?}", start_time.elapsed());
 
+            // Walker threads read mtime straight from the index so they can
+            // skip text extraction for files the writer is about to skip
+            // anyway. WAL allows concurrent readers, so this never blocks the
+            // single writer below.
+            let walker_db = path.clone();
+
             // Spawn parallel walker
             thread::spawn(move || {
                 builder.build_parallel().run(|| {
                     let tx = tx.clone();
                     let exclusions = exclusions_arc.clone();
+                    let mtime_conn: Option<rusqlite::Connection> =
+                        match rusqlite::Connection::open_with_flags(
+                            &walker_db,
+                            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                        ) {
+                            Ok(c) => {
+                                if let Err(e) = c.busy_timeout(std::time::Duration::from_secs(5)) {
+                                    log::warn!("Walker get mtime check unavailable: {e}");
+                                    None
+                                } else {
+                                    Some(c)
+                                }
+                            }
+                            Err(e) => {
+                                log::warn!("Walker read connection unavailable: {e}");
+                                None
+                            }
+                        };
                     Box::new(move |result| {
                         if INDEX_GEN.load(std::sync::atomic::Ordering::SeqCst) != current_gen {
                             return ignore::WalkState::Quit;
@@ -264,8 +314,36 @@ async fn start_indexing(
                                     .unwrap_or(0);
                                 let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
 
+                                // A full rescan used to run text extraction for every
+                                // indexable file before the writer had a chance to see
+                                // the file was unchanged, so every launch re-parsed
+                                // every PDF and DOCX on disk. Ask the index first:
+                                // unchanged files skip extraction entirely and only
+                                // pay for their sync_id stamp.
+                                let already_indexed = match mtime_conn.as_ref() {
+                                    Some(c) if mtime != 0 => {
+                                        let stmt = "SELECT mtime FROM file_metadata WHERE path = ?1";
+                                        match c.query_row(stmt, params![&path_str], |row| {
+                                            row.get::<_, i64>(0)
+                                        }) {
+                                            Ok(old) => old == mtime,
+                                            Err(_) => false,
+                                        }
+                                    }
+                                    _ => false,
+                                };
+
                                 let mut text_content = String::new();
-                                if file_type.is_file() && content::should_index_content(ext) {
+                                if !already_indexed
+                                    && file_type.is_file()
+                                    && content::should_index_content(ext)
+                                    // Never read a cloud placeholder's body: that
+                                    // hydrates the real file over the network.
+                                    && !metadata
+                                        .as_ref()
+                                        .map(is_cloud_placeholder)
+                                        .unwrap_or(false)
+                                {
                                     text_content = content::extract_text(entry.path(), ext);
                                 }
 
@@ -1131,6 +1209,19 @@ mod tests {
         assert_eq!(ordered, vec!["Music", "Images", "Code"]);
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn cloud_placeholder_attributes_are_detected() {
+        assert!(super::is_cloud_placeholder_bits(0x0040_0000)); // RECALL_ON_DATA_ACCESS
+        assert!(super::is_cloud_placeholder_bits(0x0000_1000)); // OFFLINE
+        assert!(super::is_cloud_placeholder_bits(0x0004_0000)); // RECALL_ON_OPEN
+        // Unrelated flags set alongside a placeholder bit must not hide it.
+        assert!(super::is_cloud_placeholder_bits(0x0004_0000 | 0x0020)); // + ARCHIVE
+        // A local file with only regular attributes is not a placeholder.
+        assert!(!super::is_cloud_placeholder_bits(0x0020));
+        assert!(!super::is_cloud_placeholder_bits(0));
+    }
+
     #[test]
     fn fts_snippet_highlights_a_match_inside_file_content() {
         let dir = tempdir().unwrap();
@@ -1705,10 +1796,17 @@ pub fn run() {
                                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                                     .map(|d| d.as_secs() as i64)
                                     .unwrap_or(0);
-                                let size = metadata.map(|m| m.len()).unwrap_or(0);
+                                let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
 
                                 let mut text_content = String::new();
-                                if content::should_index_content(ext) {
+                                // Same rule as the scanner: a cloud placeholder's
+                                // body must not be read (it would hydrate the
+                                // real file over the network during a live watch).
+                                let placeholder = metadata
+                                    .as_ref()
+                                    .map(is_cloud_placeholder)
+                                    .unwrap_or(false);
+                                if content::should_index_content(ext) && !placeholder {
                                     text_content = content::extract_text(&path, ext);
                                 }
                                 let content_str = format!("{} {} {}", title_str, path_str, text_content);
