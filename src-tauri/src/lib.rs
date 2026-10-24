@@ -322,7 +322,8 @@ async fn start_indexing(
                                 // pay for their sync_id stamp.
                                 let already_indexed = match mtime_conn.as_ref() {
                                     Some(c) if mtime != 0 => {
-                                        let stmt = "SELECT mtime FROM file_metadata WHERE path = ?1";
+                                        let stmt =
+                                            "SELECT mtime FROM file_metadata WHERE path = ?1";
                                         match c.query_row(stmt, params![&path_str], |row| {
                                             row.get::<_, i64>(0)
                                         }) {
@@ -656,9 +657,13 @@ impl StructuredQuery {
 pub fn parse_size_str(s: &str) -> Option<i64> {
     let s = s.trim().to_lowercase();
     if let Some(num) = s.strip_suffix("gb") {
-        num.parse::<f64>().ok().map(|v| (v * 1024.0 * 1024.0 * 1024.0) as i64)
+        num.parse::<f64>()
+            .ok()
+            .map(|v| (v * 1024.0 * 1024.0 * 1024.0) as i64)
     } else if let Some(num) = s.strip_suffix("mb") {
-        num.parse::<f64>().ok().map(|v| (v * 1024.0 * 1024.0) as i64)
+        num.parse::<f64>()
+            .ok()
+            .map(|v| (v * 1024.0 * 1024.0) as i64)
     } else if let Some(num) = s.strip_suffix("kb") {
         num.parse::<f64>().ok().map(|v| (v * 1024.0) as i64)
     } else if let Some(num) = s.strip_suffix('b') {
@@ -732,7 +737,11 @@ fn parse_fts_query(query: &str, category_is_all: bool) -> (String, Vec<String>, 
     let fts_query = fts_terms.join(" AND ");
     let mut short_filter_sql = String::new();
     for i in 0..short_terms.len() {
-        let p_title = if category_is_all { 2 + i * 2 } else { 3 + i * 2 };
+        let p_title = if category_is_all {
+            2 + i * 2
+        } else {
+            3 + i * 2
+        };
         let p_path = p_title + 1;
         short_filter_sql.push_str(&format!(
             " AND (file_index.title LIKE ?{p_title} ESCAPE '\\' OR file_index.path LIKE ?{p_path} ESCAPE '\\')"
@@ -784,26 +793,50 @@ async fn search_files(
 
     let order_sql = match sort_by.as_deref() {
         Some("modified") | Some("date") => {
-            if sort_desc { "ORDER BY m.mtime DESC, f.rowid" } else { "ORDER BY m.mtime ASC, f.rowid" }
+            if sort_desc {
+                "ORDER BY m.mtime DESC, f.rowid"
+            } else {
+                "ORDER BY m.mtime ASC, f.rowid"
+            }
         }
         Some("size") => {
-            if sort_desc { "ORDER BY m.size DESC, f.rowid" } else { "ORDER BY m.size ASC, f.rowid" }
+            if sort_desc {
+                "ORDER BY m.size DESC, f.rowid"
+            } else {
+                "ORDER BY m.size ASC, f.rowid"
+            }
         }
         Some("name") | Some("title") => {
-            if sort_desc { "ORDER BY f.title COLLATE NOCASE DESC, f.rowid" } else { "ORDER BY f.title COLLATE NOCASE ASC, f.rowid" }
+            if sort_desc {
+                "ORDER BY f.title COLLATE NOCASE DESC, f.rowid"
+            } else {
+                "ORDER BY f.title COLLATE NOCASE ASC, f.rowid"
+            }
         }
         _ => "ORDER BY f.rowid",
     };
 
     let order_fts_sql = match sort_by.as_deref() {
         Some("modified") | Some("date") => {
-            if sort_desc { "ORDER BY m.mtime DESC, file_index.rowid" } else { "ORDER BY m.mtime ASC, file_index.rowid" }
+            if sort_desc {
+                "ORDER BY m.mtime DESC, file_index.rowid"
+            } else {
+                "ORDER BY m.mtime ASC, file_index.rowid"
+            }
         }
         Some("size") => {
-            if sort_desc { "ORDER BY m.size DESC, file_index.rowid" } else { "ORDER BY m.size ASC, file_index.rowid" }
+            if sort_desc {
+                "ORDER BY m.size DESC, file_index.rowid"
+            } else {
+                "ORDER BY m.size ASC, file_index.rowid"
+            }
         }
         Some("name") | Some("title") => {
-            if sort_desc { "ORDER BY file_index.title COLLATE NOCASE DESC, file_index.rowid" } else { "ORDER BY file_index.title COLLATE NOCASE ASC, file_index.rowid" }
+            if sort_desc {
+                "ORDER BY file_index.title COLLATE NOCASE DESC, file_index.rowid"
+            } else {
+                "ORDER BY file_index.title COLLATE NOCASE ASC, file_index.rowid"
+            }
         }
         _ => "ORDER BY bm25(file_index, 10.0, 5.0, 1.0), file_index.rowid",
     };
@@ -821,7 +854,9 @@ async fn search_files(
             {}
             LIMIT {limit} OFFSET {offset}
         ",
-            cat_filter, structured.to_sql_clauses(), order_sql
+            cat_filter,
+            structured.to_sql_clauses(),
+            order_sql
         );
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![];
@@ -855,7 +890,8 @@ async fn search_files(
         return Ok(final_results);
     }
 
-    let is_regex = search_term.starts_with('/') && search_term.ends_with('/') && search_term.len() > 2;
+    let is_regex =
+        search_term.starts_with('/') && search_term.ends_with('/') && search_term.len() > 2;
     let alnum_len = |term: &str| term.chars().filter(|c| c.is_alphanumeric()).count();
     let trigram_capable = search_term.split_whitespace().any(|t| alnum_len(t) >= 3);
     let short_query = !is_regex && !trigram_capable;
@@ -873,7 +909,9 @@ async fn search_files(
             {}
             LIMIT {limit} OFFSET {offset}
         ",
-            cat_filter, structured.to_sql_clauses(), order_sql
+            cat_filter,
+            structured.to_sql_clauses(),
+            order_sql
         );
         let escaped = search_term
             .replace('\\', "\\\\")
@@ -925,7 +963,9 @@ async fn search_files(
             {}
             LIMIT {limit} OFFSET {offset}
         ",
-            cat_filter, structured.to_sql_clauses(), order_sql
+            cat_filter,
+            structured.to_sql_clauses(),
+            order_sql
         );
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
 
@@ -981,7 +1021,10 @@ async fn search_files(
             {}
             LIMIT {limit} OFFSET {offset}
         ",
-            cat_filter_fts, short_filter_sql, structured.to_fts_sql_clauses(), order_fts_sql
+            cat_filter_fts,
+            short_filter_sql,
+            structured.to_fts_sql_clauses(),
+            order_fts_sql
         );
 
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
@@ -999,8 +1042,7 @@ async fn search_files(
             .query_map(rusqlite::params_from_iter(params_vec), |row| {
                 let bm25: f64 = row.get::<_, f64>(4).unwrap_or(0.0);
                 let score = (-bm25).max(0.0);
-                let relevance =
-                    ((score / (score + 2.0)) * 100.0).clamp(1.0, 100.0) as u8;
+                let relevance = ((score / (score + 2.0)) * 100.0).clamp(1.0, 100.0) as u8;
                 Ok(SearchResult {
                     id: row.get::<_, i64>(0)?,
                     title: row.get::<_, String>(1)?,
@@ -1064,19 +1106,23 @@ async fn search_count(
             "SELECT COUNT(*) FROM file_index f \
              LEFT JOIN file_metadata m ON f.path = m.path \
              WHERE 1=1 {} {}",
-            cat_filter, structured.to_sql_clauses()
+            cat_filter,
+            structured.to_sql_clauses()
         );
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![];
         if category != "All" {
             params_vec.push(&category);
         }
-        return stmt.query_row(rusqlite::params_from_iter(params_vec), |row| {
-            row.get::<_, i64>(0)
-        }).map_err(|e| e.to_string());
+        return stmt
+            .query_row(rusqlite::params_from_iter(params_vec), |row| {
+                row.get::<_, i64>(0)
+            })
+            .map_err(|e| e.to_string());
     }
 
-    let is_regex = search_term.starts_with('/') && search_term.ends_with('/') && search_term.len() > 2;
+    let is_regex =
+        search_term.starts_with('/') && search_term.ends_with('/') && search_term.len() > 2;
     let alnum_len = |term: &str| term.chars().filter(|c| c.is_alphanumeric()).count();
     let trigram_capable = search_term.split_whitespace().any(|t| alnum_len(t) >= 3);
     let short_query = !is_regex && !trigram_capable;
@@ -1086,7 +1132,8 @@ async fn search_count(
             "SELECT COUNT(*) FROM file_index f \
              LEFT JOIN file_metadata m ON f.path = m.path \
              WHERE (f.path LIKE ?1 ESCAPE '\\' OR f.title LIKE ?2 ESCAPE '\\') {} {}",
-            cat_filter, structured.to_sql_clauses()
+            cat_filter,
+            structured.to_sql_clauses()
         );
         let escaped = search_term
             .replace('\\', "\\\\")
@@ -1108,7 +1155,8 @@ async fn search_count(
             "SELECT COUNT(*) FROM file_index f \
              LEFT JOIN file_metadata m ON f.path = m.path \
              WHERE (f.path REGEXP ?1 OR f.title REGEXP ?2) {} {}",
-            cat_filter, structured.to_sql_clauses()
+            cat_filter,
+            structured.to_sql_clauses()
         );
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![&regex_pattern, &regex_pattern];
@@ -1131,7 +1179,9 @@ async fn search_count(
             "SELECT COUNT(*) FROM file_index \
              LEFT JOIN file_metadata m ON file_index.path = m.path \
              WHERE file_index MATCH ?1 {} {} {}",
-            cat_filter_fts, short_filter_sql, structured.to_fts_sql_clauses()
+            cat_filter_fts,
+            short_filter_sql,
+            structured.to_fts_sql_clauses()
         );
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![&fts_query];
@@ -1308,7 +1358,8 @@ async fn find_duplicates(app_handle: AppHandle) -> Result<Vec<DuplicateGroup>, S
         .collect::<Result<Vec<DuplicateFile>, rusqlite::Error>>()
         .map_err(|e| e.to_string())?;
 
-    let mut by_size: std::collections::HashMap<u64, Vec<DuplicateFile>> = std::collections::HashMap::new();
+    let mut by_size: std::collections::HashMap<u64, Vec<DuplicateFile>> =
+        std::collections::HashMap::new();
     for file in candidates {
         by_size.entry(file.size).or_default().push(file);
     }
@@ -1320,7 +1371,8 @@ async fn find_duplicates(app_handle: AppHandle) -> Result<Vec<DuplicateGroup>, S
             continue;
         }
 
-        let mut by_hash: std::collections::HashMap<u64, Vec<DuplicateFile>> = std::collections::HashMap::new();
+        let mut by_hash: std::collections::HashMap<u64, Vec<DuplicateFile>> =
+            std::collections::HashMap::new();
         for file in files {
             let p = std::path::Path::new(&file.path);
             if let Ok(hash) = hash_file_bytes(p) {
@@ -1652,9 +1704,9 @@ mod tests {
         assert!(super::is_cloud_placeholder_bits(0x0040_0000)); // RECALL_ON_DATA_ACCESS
         assert!(super::is_cloud_placeholder_bits(0x0000_1000)); // OFFLINE
         assert!(super::is_cloud_placeholder_bits(0x0004_0000)); // RECALL_ON_OPEN
-        // Unrelated flags set alongside a placeholder bit must not hide it.
+                                                                // Unrelated flags set alongside a placeholder bit must not hide it.
         assert!(super::is_cloud_placeholder_bits(0x0004_0000 | 0x0020)); // + ARCHIVE
-        // A local file with only regular attributes is not a placeholder.
+                                                                         // A local file with only regular attributes is not a placeholder.
         assert!(!super::is_cloud_placeholder_bits(0x0020));
         assert!(!super::is_cloud_placeholder_bits(0));
     }
@@ -1685,7 +1737,9 @@ mod tests {
         let snippet: String = conn
             .prepare(sql)
             .unwrap()
-            .query_row(rusqlite::params!["\"invoice\""], |row| row.get::<_, String>(1))
+            .query_row(rusqlite::params!["\"invoice\""], |row| {
+                row.get::<_, String>(1)
+            })
             .unwrap();
 
         assert!(snippet.contains("<b>invoice</b>"), "got: {snippet}");
@@ -1800,13 +1854,27 @@ mod tests {
 
     #[test]
     fn dangerous_executables_are_detected() {
-        assert!(super::is_dangerous_executable(std::path::Path::new("malware.exe")));
-        assert!(super::is_dangerous_executable(std::path::Path::new("script.bat")));
-        assert!(super::is_dangerous_executable(std::path::Path::new("command.ps1")));
-        assert!(super::is_dangerous_executable(std::path::Path::new("install.sh")));
-        assert!(!super::is_dangerous_executable(std::path::Path::new("document.pdf")));
-        assert!(!super::is_dangerous_executable(std::path::Path::new("photo.png")));
-        assert!(!super::is_dangerous_executable(std::path::Path::new("notes.txt")));
+        assert!(super::is_dangerous_executable(std::path::Path::new(
+            "malware.exe"
+        )));
+        assert!(super::is_dangerous_executable(std::path::Path::new(
+            "script.bat"
+        )));
+        assert!(super::is_dangerous_executable(std::path::Path::new(
+            "command.ps1"
+        )));
+        assert!(super::is_dangerous_executable(std::path::Path::new(
+            "install.sh"
+        )));
+        assert!(!super::is_dangerous_executable(std::path::Path::new(
+            "document.pdf"
+        )));
+        assert!(!super::is_dangerous_executable(std::path::Path::new(
+            "photo.png"
+        )));
+        assert!(!super::is_dangerous_executable(std::path::Path::new(
+            "notes.txt"
+        )));
     }
 }
 

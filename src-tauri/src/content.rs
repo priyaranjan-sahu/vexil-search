@@ -102,7 +102,9 @@ pub fn extract_text(path: &Path, ext: &str) -> String {
             use std::io::Read;
             let file = std::fs::File::open(path).map_err(|e| format!("open '{path:?}': {e}"))?;
             let mut buf = Vec::new();
-            file.take(MAX_TEXT_BYTES).read_to_end(&mut buf).map_err(|e| e.to_string())?;
+            file.take(MAX_TEXT_BYTES)
+                .read_to_end(&mut buf)
+                .map_err(|e| e.to_string())?;
             Ok(rtf_text(&buf))
         })
         .unwrap_or_default(),
