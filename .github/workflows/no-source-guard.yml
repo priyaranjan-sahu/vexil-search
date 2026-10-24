@@ -36,7 +36,7 @@ jobs:
 
           # Top-level entries this repository is allowed to contain: the
           # workflows, the public site, its assets, and documentation.
-          allowed='^\.github/|^\.gitignore$|^\.gitattributes$|^CODEOWNERS$|^LICENSE|^README\.md$|^PRIVACY_POLICY\.md$|^TERMS_AND_CONDITIONS\.md$|^index\.html$|^assets/'
+          allowed='^\.github/|^\.gitignore$|^\.gitattributes$|^CODEOWNERS$|^LICENSE|^README\.md$|^PRIVACY_POLICY\.md$|^TERMS_AND_CONDITIONS\.md$|^RELEASE_NOTES\.md$|^index\.html$|^assets/'
 
           unexpected="$(git ls-files | grep -vE "$allowed" || true)"
 
