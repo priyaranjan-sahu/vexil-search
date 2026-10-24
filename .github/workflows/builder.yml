@@ -17,6 +17,11 @@ on:
         type: boolean
         required: false
         default: false
+      bump_test_version:
+        description: "Auto-increment version for test release and create a new versioned release (e.g. v0.2.1-test)"
+        type: boolean
+        required: false
+        default: false
       ref:
         description: "Private repo branch or tag to build (blank = master). Lets a feature branch be validated here on free public runners, because a pull_request in the private repo cannot trigger a workflow in this one."
         type: string
@@ -56,6 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       release_version: ${{ steps.calc_version.outputs.release_version }}
+      test_tag: ${{ steps.calc_version.outputs.test_tag }}
     env:
       VITE_LICENSE_SERVER: ${{ vars.VITE_LICENSE_SERVER }}
     steps:
@@ -85,14 +91,15 @@ jobs:
         with:
           node-version: 20
           cache: "npm"
-      - name: Calculate Release Version
+      - name: Calculate Version & Test Tag
         id: calc_version
-        if: github.event.inputs.release == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INPUT_VERSION: ${{ github.event.inputs.version }}
+          IS_RELEASE: ${{ github.event.inputs.release == 'true' }}
+          IS_BUMP_TEST: ${{ github.event.inputs.bump_test_version == 'true' }}
         run: |
-          LATEST_TAG=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName 2>/dev/null || true)
+          LATEST_PUBLIC_TAG=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName 2>/dev/null || true)
           TARGET_VERSION=$(node -e '
             const fs = require("fs");
             function parseSemver(v) {
@@ -112,46 +119,67 @@ jobs:
               const s = parseSemver(v);
               return s.major + "." + s.minor + "." + (s.patch + 1);
             }
-            const inputVersion = process.env.INPUT_VERSION || "";
-            const latestTag = process.argv[1] || "";
-            const repoVersion = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8")).version || "0.1.0";
-            if (inputVersion.trim()) {
-              console.log(inputVersion.trim().replace(/^v/, ""));
-            } else if (!latestTag.trim()) {
-              console.log(repoVersion.trim().replace(/^v/, ""));
-            } else {
-              const latestClean = latestTag.trim().replace(/^v/, "");
-              const repoClean = repoVersion.trim().replace(/^v/, "");
-              if (compareSemver(repoClean, latestClean) > 0) {
-                console.log(repoClean);
+            const inputVersion = (process.env.INPUT_VERSION || "").trim();
+            const isRelease = process.env.IS_RELEASE === "true";
+            const isBumpTest = process.env.IS_BUMP_TEST === "true";
+            const latestPublicTag = (process.argv[1] || "").trim();
+            const repoVersion = (JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8")).version || "0.1.0").trim();
+
+            if (inputVersion) {
+              console.log(inputVersion.replace(/^v/, ""));
+            } else if (isRelease) {
+              if (!latestPublicTag) {
+                console.log(repoVersion.replace(/^v/, ""));
               } else {
-                const base = compareSemver(repoClean, latestClean) >= 0 ? repoClean : latestClean;
-                console.log(incrementPatch(base));
+                const latestClean = latestPublicTag.replace(/^v/, "");
+                const repoClean = repoVersion.replace(/^v/, "");
+                if (compareSemver(repoClean, latestClean) > 0) {
+                  console.log(repoClean);
+                } else {
+                  const base = compareSemver(repoClean, latestClean) >= 0 ? repoClean : latestClean;
+                  console.log(incrementPatch(base));
+                }
               }
+            } else if (isBumpTest) {
+              console.log(incrementPatch(repoVersion));
+            } else {
+              console.log(repoVersion.replace(/^v/, ""));
             }
-          ' "$LATEST_TAG")
-          echo "Calculated release version: $TARGET_VERSION"
+          ' "$LATEST_PUBLIC_TAG")
+
+          echo "Calculated version: $TARGET_VERSION"
           echo "release_version=$TARGET_VERSION" >> "$GITHUB_OUTPUT"
-          node -e '
-            const fs = require("fs");
-            const v = process.argv[1];
-            if (!v) process.exit(0);
-            if (fs.existsSync("package.json")) {
-              const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
-              pkg.version = v;
-              fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
-            }
-            if (fs.existsSync("src-tauri/tauri.conf.json")) {
-              const tauri = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8"));
-              tauri.version = v;
-              fs.writeFileSync("src-tauri/tauri.conf.json", JSON.stringify(tauri, null, 2) + "\n");
-            }
-            if (fs.existsSync("src-tauri/Cargo.toml")) {
-              let cargo = fs.readFileSync("src-tauri/Cargo.toml", "utf8");
-              cargo = cargo.replace(/^version = "[^"]+"/m, "version = \"" + v + "\"");
-              fs.writeFileSync("src-tauri/Cargo.toml", cargo);
-            }
-          ' "$TARGET_VERSION"
+
+          if [ "$IS_BUMP_TEST" = "true" ] || ([ -n "$INPUT_VERSION" ] && [ "$IS_RELEASE" != "true" ]); then
+            echo "test_tag=v${TARGET_VERSION}-test" >> "$GITHUB_OUTPUT"
+            echo "Calculated test_tag: v${TARGET_VERSION}-test"
+          else
+            echo "test_tag=mobile-test" >> "$GITHUB_OUTPUT"
+            echo "Calculated test_tag: mobile-test"
+          fi
+
+          if [ "$IS_RELEASE" = "true" ] || [ "$IS_BUMP_TEST" = "true" ] || [ -n "$INPUT_VERSION" ]; then
+            node -e '
+              const fs = require("fs");
+              const v = process.argv[1];
+              if (!v) process.exit(0);
+              if (fs.existsSync("package.json")) {
+                const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+                pkg.version = v;
+                fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+              }
+              if (fs.existsSync("src-tauri/tauri.conf.json")) {
+                const tauri = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8"));
+                tauri.version = v;
+                fs.writeFileSync("src-tauri/tauri.conf.json", JSON.stringify(tauri, null, 2) + "\n");
+              }
+              if (fs.existsSync("src-tauri/Cargo.toml")) {
+                let cargo = fs.readFileSync("src-tauri/Cargo.toml", "utf8");
+                cargo = cargo.replace(/^version = "[^"]+"/m, "version = \"" + v + "\"");
+                fs.writeFileSync("src-tauri/Cargo.toml", cargo);
+              }
+            ' "$TARGET_VERSION"
+          fi
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
@@ -230,7 +258,7 @@ jobs:
           node-version: 20
           cache: "npm"
       - name: Apply Release Version
-        if: github.event.inputs.release == 'true'
+        if: github.event.inputs.release == 'true' || github.event.inputs.bump_test_version == 'true' || github.event.inputs.version != ''
         shell: bash
         run: |
           VERSION="${{ needs.quality-gates.outputs.release_version }}"
@@ -328,10 +356,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
         run: |
-          TEST_TAG=mobile-test
+          TEST_TAG="${{ needs.quality-gates.outputs.test_tag || 'mobile-test' }}"
           TEST_REPO=priyaranjan-sahu/vexil
           gh release view "$TEST_TAG" --repo "$TEST_REPO" > /dev/null 2>&1 || \
-            gh release create "$TEST_TAG" --title "Vexil Search (test build)" --prerelease --repo "$TEST_REPO"
+            gh release create "$TEST_TAG" --title "Vexil Search ($TEST_TAG)" --prerelease --repo "$TEST_REPO"
           for f in src-tauri/target/release/bundle/*/* src-tauri/target/universal-apple-darwin/release/bundle/*/*; do
             if [ -f "$f" ]; then
               case "$f" in
@@ -367,7 +395,7 @@ jobs:
           node-version: 20
           cache: "npm"
       - name: Apply Release Version
-        if: github.event.inputs.release == 'true'
+        if: github.event.inputs.release == 'true' || github.event.inputs.bump_test_version == 'true' || github.event.inputs.version != ''
         shell: bash
         run: |
           VERSION="${{ needs.quality-gates.outputs.release_version }}"
@@ -472,10 +500,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
         run: |
-          TEST_TAG=mobile-test
+          TEST_TAG="${{ needs.quality-gates.outputs.test_tag || 'mobile-test' }}"
           TEST_REPO=priyaranjan-sahu/vexil
           gh release view "$TEST_TAG" --repo "$TEST_REPO" > /dev/null 2>&1 || \
-            gh release create "$TEST_TAG" --title "Vexil Search (test build)" --prerelease --repo "$TEST_REPO"
+            gh release create "$TEST_TAG" --title "Vexil Search ($TEST_TAG)" --prerelease --repo "$TEST_REPO"
           for f in src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk src-tauri/gen/android/app/build/outputs/apk/universal/debug/*.apk; do
             gh release upload "$TEST_TAG" "$f" --repo "$TEST_REPO" --clobber
           done
@@ -498,7 +526,7 @@ jobs:
           node-version: 20
           cache: "npm"
       - name: Apply Release Version
-        if: github.event.inputs.release == 'true'
+        if: github.event.inputs.release == 'true' || github.event.inputs.bump_test_version == 'true' || github.event.inputs.version != ''
         shell: bash
         run: |
           VERSION="${{ needs.quality-gates.outputs.release_version }}"
@@ -564,32 +592,73 @@ jobs:
     # referencing env here makes the whole workflow fail to compile with zero
     # jobs. Only steps can read env.
     if: github.event_name == 'push' || (github.event.inputs.test_release == 'true' && github.event.inputs.release != 'true')
-    needs: [build-and-release, build-android]
+    needs: [quality-gates, build-and-release, build-android]
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout Repository
+        if: github.event.inputs.bump_test_version == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: priyaranjan-sahu/vexil
+          ref: refs/heads/master
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: .
+      - name: Commit and Push Version Bump to Private Master
+        if: github.event.inputs.bump_test_version == 'true'
+        run: |
+          VERSION="${{ needs.quality-gates.outputs.release_version }}"
+          node -e '
+            const fs = require("fs");
+            const v = process.argv[1];
+            if (!v) process.exit(0);
+            if (fs.existsSync("package.json")) {
+              const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+              pkg.version = v;
+              fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+            }
+            if (fs.existsSync("src-tauri/tauri.conf.json")) {
+              const tauri = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8"));
+              tauri.version = v;
+              fs.writeFileSync("src-tauri/tauri.conf.json", JSON.stringify(tauri, null, 2) + "\n");
+            }
+            if (fs.existsSync("src-tauri/Cargo.toml")) {
+              let cargo = fs.readFileSync("src-tauri/Cargo.toml", "utf8");
+              cargo = cargo.replace(/^version = "[^"]+"/m, "version = \"" + v + "\"");
+              fs.writeFileSync("src-tauri/Cargo.toml", cargo);
+            }
+          ' "$VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout master || git checkout -b master origin/master
+          if ! git diff --quiet package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml; then
+            git commit -am "chore(test): bump version to $VERSION [skip ci]"
+            git push origin master
+          fi
       - name: Stamp Test Release with Build Details
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
         run: |
-          TEST_TAG=mobile-test
+          TEST_TAG="${{ needs.quality-gates.outputs.test_tag || 'mobile-test' }}"
           TEST_REPO=priyaranjan-sahu/vexil
           BUILT_AT=$(date -u '+%Y-%m-%d %H:%M UTC')
           SHORT_SHA="${GITHUB_SHA:0:8}"
           RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          VERSION="${{ needs.quality-gates.outputs.release_version }}"
 
           # No backticks in this heredoc: an unquoted EOF would treat them as
           # command substitution and blank the asset names out of the body.
           NOTES=$(cat <<EOF
           Latest test build, uploaded automatically by the public pipeline.
 
+          - Version: $VERSION
+          - Tag: $TEST_TAG
           - Built: $BUILT_AT
           - Commit: $SHORT_SHA
           - Workflow run: $RUN_URL
           - Trigger: $GITHUB_EVENT_NAME
 
-          Assets are replaced in place on every build, so only the newest build is
-          kept at this tag and each asset timestamp shows which run produced it.
+          Assets are replaced in place on every build for this tag.
 
           - Vexil-Search-*-release.apk is signed and contains the production license key.
           - Vexil-Search-*-debug.apk is installable for logcat work but contains the
@@ -597,11 +666,16 @@ jobs:
           EOF
           )
 
+          TITLE="Vexil Search v$VERSION ($TEST_TAG) - $BUILT_AT"
+          if [ "$TEST_TAG" = "mobile-test" ]; then
+            TITLE="Vexil Search (test build) - $BUILT_AT"
+          fi
+
           gh release view "$TEST_TAG" --repo "$TEST_REPO" > /dev/null 2>&1 || \
             gh release create "$TEST_TAG" --repo "$TEST_REPO" --prerelease \
-              --title "Vexil Search (test build)" --notes "Awaiting first upload."
+              --title "$TITLE" --notes "Awaiting first upload."
           gh release edit "$TEST_TAG" --repo "$TEST_REPO" \
-            --title "Vexil Search (test build) - $BUILT_AT" --notes "$NOTES"
+            --title "$TITLE" --notes "$NOTES"
   finalize-release:
     # Manual release runs only: demote the previous release by marking the new
     # versioned release as GitHub "Latest", then retire the legacy fixed
