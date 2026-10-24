@@ -20,6 +20,8 @@ import { useSearchStore, SearchResult, Theme } from "./store/searchStore";
 import { useLicenseStore, FEATURES } from "./store/licenseStore";
 import { useThemeSync } from "./lib/useTheme";
 import { getFilteredResults as filterResults } from "./lib/resultFilters";
+import { ShortcutRecorder } from "./components/ShortcutRecorder";
+import { formatShortcutForDisplay } from "./lib/shortcutHelper";
 
 // True when the keydown target is a text field, in which case native
 // Cmd/Ctrl+C (copy selected text) should be left untouched.
@@ -214,8 +216,6 @@ function App() {
     return () => window.removeEventListener("click", closeMenu);
   }, []);
 
-  // Settings & Theme
-  const [tempShortcut, setTempShortcut] = useState("");
   // Track shortcut registration to avoid double-registration in StrictMode
   const shortcutRegisteredRef = useRef(false);
   const currentShortcutRef = useRef(shortcut);
@@ -451,13 +451,38 @@ function App() {
     runSearch(q, true);
   };
 
-  const saveShortcut = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (tempShortcut.trim()) {
-      setShortcut(tempShortcut.trim());
-      setTempShortcut("");
-    }
-  };
+  const removeRecentSearch = useCallback(
+    (itemToRemove: string, e?: React.MouseEvent) => {
+      if (e) e.stopPropagation();
+      setRecentSearches((prev) => {
+        const updated = prev.filter((item) => item !== itemToRemove);
+        try {
+          localStorage.setItem(
+            "vexil_recent_searches",
+            JSON.stringify(updated),
+          );
+        } catch {
+          // Ignore storage failure
+        }
+        return updated;
+      });
+    },
+    [],
+  );
+
+  const applySyntaxChip = useCallback(
+    (chipText: string) => {
+      const trimmed = searchQuery.trim();
+      const updated = !trimmed
+        ? chipText
+        : trimmed.includes(chipText.trim())
+          ? searchQuery
+          : `${trimmed} ${chipText}`;
+      setSearchQuery(updated);
+      searchInputRef.current?.focus();
+    },
+    [searchQuery, setSearchQuery],
+  );
 
   const getFilteredResults = useCallback(() => {
     return results.filter((r) => {
@@ -915,20 +940,22 @@ function App() {
       {/* 2. Toolbar */}
       <div className="toolbar">
         <form
-          className="search-wrapper"
+          className="search-wrapper modern-search-wrapper"
           style={{ position: "relative" }}
           onSubmit={(e) => handleSearch(e)}
         >
-          <svg
-            className="search-icon"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-          >
-            <circle cx="11" cy="11" r="8"></circle>
-            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-          </svg>
+          <div className="search-icon-wrapper">
+            <svg
+              className="search-icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
+              <circle cx="11" cy="11" r="8"></circle>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            </svg>
+          </div>
           <input
             ref={searchInputRef}
             type="text"
@@ -937,100 +964,142 @@ function App() {
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             onFocus={() => setIsSearchFocused(true)}
-            onBlur={() => setTimeout(() => setIsSearchFocused(false), 200)}
+            onBlur={() => setTimeout(() => setIsSearchFocused(false), 250)}
           />
-          {searchQuery.trim() && (
+
+          <div className="search-actions-group">
+            {searchQuery.trim() ? (
+              <>
+                <button
+                  type="button"
+                  className="search-action-btn search-clear-btn"
+                  onClick={() => {
+                    setSearchQuery("");
+                    searchInputRef.current?.focus();
+                  }}
+                  title="Clear search"
+                >
+                  ✕
+                </button>
+                <button
+                  type="button"
+                  className={`search-action-btn search-star-btn ${
+                    savedSearches.includes(searchQuery.trim()) ? "active" : ""
+                  }`}
+                  onClick={() => toggleSaveSearch(searchQuery)}
+                  title={
+                    savedSearches.includes(searchQuery.trim())
+                      ? "Remove from Saved Searches"
+                      : "Save search shortcut"
+                  }
+                >
+                  ★
+                </button>
+              </>
+            ) : null}
+
             <button
               type="button"
-              onClick={() => toggleSaveSearch(searchQuery)}
-              style={{
-                position: "absolute",
-                right: "10px",
-                top: "50%",
-                transform: "translateY(-50%)",
-                background: "transparent",
-                border: "none",
-                fontSize: "1rem",
-                color: savedSearches.includes(searchQuery.trim())
-                  ? "#f59e0b"
-                  : "var(--text-muted)",
-                cursor: "pointer",
-                padding: "2px 6px",
-              }}
-              title={
-                savedSearches.includes(searchQuery.trim())
-                  ? "Remove from Saved Searches"
-                  : "Save search shortcut"
-              }
+              className="search-shortcut-pill"
+              onClick={() => setShowSettings(true)}
+              title="Global Toggle Hotkey — Click to configure in Preferences"
             >
-              ★
+              <span className="shortcut-pill-icon">⌘</span>
+              <span className="shortcut-pill-text">
+                {formatShortcutForDisplay(shortcut)}
+              </span>
             </button>
-          )}
+          </div>
 
-          {isSearchFocused &&
-            !searchQuery.trim() &&
-            recentSearches.length > 0 && (
-              <div
-                style={{
-                  position: "absolute",
-                  top: "100%",
-                  left: 0,
-                  right: 0,
-                  marginTop: "4px",
-                  backgroundColor: "var(--surface-color)",
-                  border: "1px solid var(--surface-border)",
-                  borderRadius: "8px",
-                  boxShadow: "0 8px 24px rgba(0,0,0,0.25)",
-                  zIndex: 1000,
-                  overflow: "hidden",
-                }}
-              >
-                <div
-                  style={{
-                    padding: "6px 12px",
-                    fontSize: "0.72rem",
-                    color: "var(--text-secondary)",
-                    backgroundColor: "var(--bg-secondary)",
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                  }}
-                >
-                  <span>RECENT SEARCHES</span>
-                  <span
-                    style={{ cursor: "pointer", color: "var(--text-muted)" }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setRecentSearches([]);
-                      localStorage.removeItem("vexil_recent_searches");
-                    }}
-                  >
-                    Clear
-                  </span>
-                </div>
-                {recentSearches.map((item) => (
-                  <div
-                    key={item}
-                    className="menu-dropdown-item"
-                    onMouseDown={() => {
-                      setSearchQuery(item);
-                      handleSearch(undefined, item);
-                    }}
-                    style={{
-                      padding: "8px 12px",
-                      cursor: "pointer",
-                      fontSize: "0.85rem",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "8px",
-                    }}
-                  >
-                    <span style={{ opacity: 0.6 }}>🔍</span>
-                    <span>{item}</span>
+          {isSearchFocused && !searchQuery.trim() && (
+            <div className="search-dropdown-popover">
+              {recentSearches.length > 0 && (
+                <div className="search-recents-section">
+                  <div className="search-dropdown-header">
+                    <span>RECENT SEARCHES</span>
+                    <button
+                      type="button"
+                      className="search-clear-all-btn"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        setRecentSearches([]);
+                        localStorage.removeItem("vexil_recent_searches");
+                      }}
+                    >
+                      Clear All
+                    </button>
                   </div>
-                ))}
+                  <div className="search-recents-list">
+                    {recentSearches.map((item) => (
+                      <div
+                        key={item}
+                        className="search-recent-item"
+                        onMouseDown={() => {
+                          setSearchQuery(item);
+                          handleSearch(undefined, item);
+                        }}
+                      >
+                        <div className="recent-item-left">
+                          <svg
+                            className="recent-clock-icon"
+                            viewBox="0 0 24 24"
+                            width="13"
+                            height="13"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                          >
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <polyline points="12 6 12 12 16 14"></polyline>
+                          </svg>
+                          <span className="recent-item-text">{item}</span>
+                        </div>
+                        <button
+                          type="button"
+                          className="recent-delete-btn"
+                          title="Remove from recents"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            removeRecentSearch(item);
+                          }}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="search-quick-syntax-section">
+                <div className="search-dropdown-header">
+                  <span>QUICK FILTERS</span>
+                </div>
+                <div className="search-syntax-chips">
+                  {[
+                    { label: "ext:pdf", insert: "ext:pdf " },
+                    { label: "ext:docx", insert: "ext:docx " },
+                    { label: "ext:rs", insert: "ext:rs " },
+                    { label: "size:>10mb", insert: "size:>10mb " },
+                    { label: "date:today", insert: "date:today " },
+                  ].map((chip) => (
+                    <button
+                      key={chip.label}
+                      type="button"
+                      className="syntax-chip"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        applySyntaxChip(chip.insert);
+                      }}
+                    >
+                      {chip.label}
+                    </button>
+                  ))}
+                </div>
               </div>
-            )}
+            </div>
+          )}
         </form>
 
         {savedSearches.length > 0 && (
@@ -1817,17 +1886,17 @@ function App() {
               </select>
             </div>
 
-            <div className="settings-row">
-              <label>Global Hotkey</label>
-              <form onSubmit={saveShortcut} className="shortcut-form">
-                <input
-                  type="text"
-                  value={tempShortcut || shortcut}
-                  onChange={(e) => setTempShortcut(e.target.value)}
-                  placeholder="e.g. CommandOrControl+Shift+Space"
-                />
-                <button type="submit">Set</button>
-              </form>
+            <div className="settings-row" style={{ display: "block" }}>
+              <label style={{ display: "block", marginBottom: "8px" }}>
+                Global Hotkey
+              </label>
+              <ShortcutRecorder
+                currentShortcut={shortcut}
+                onSaveShortcut={(newShortcut) => {
+                  setShortcut(newShortcut);
+                  return true;
+                }}
+              />
             </div>
 
             <div className="settings-row" style={{ display: "block" }}>

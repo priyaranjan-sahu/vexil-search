@@ -56,28 +56,47 @@
   align-items: center;
   background: var(--input-bg);
   border: 1px solid var(--input-border);
-  border-radius: 8px;
-  padding: 0 12px;
+  border-radius: 12px;
+  padding: 0 14px;
   flex: 1;
-  max-width: 360px;
-  height: 34px;
-  min-width: 50px;
-  transition: all 0.2s ease;
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.02);
+  max-width: 680px;
+  width: 100%;
+  height: 44px;
+  min-width: 120px;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.04),
+    inset 0 1px 1px rgba(255, 255, 255, 0.05);
 }
 
 .search-wrapper:focus-within {
   border-color: var(--brand-primary);
   box-shadow:
-    0 0 0 3px rgba(0, 120, 212, 0.15),
-    inset 0 1px 2px rgba(0, 0, 0, 0.02);
+    0 8px 24px -4px rgba(0, 120, 212, 0.22),
+    0 0 0 2px var(--brand-primary);
+  background: var(--surface-color);
+}
+
+.search-icon-wrapper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 12px;
+  flex-shrink: 0;
 }
 
 .search-icon {
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   color: var(--text-secondary);
-  margin-right: 12px;
+  transition:
+    color 0.2s ease,
+    transform 0.2s ease;
+}
+
+.search-wrapper:focus-within .search-icon {
+  color: var(--brand-primary);
+  transform: scale(1.05);
 }
 
 .search-input {
@@ -87,12 +106,235 @@
   outline: none;
   color: var(--text-primary);
   font-size: 0.95rem;
+  font-weight: 500;
   font-family: inherit;
   width: 100%;
+  letter-spacing: -0.01em;
 }
 
 .search-input::placeholder {
   color: var(--text-secondary);
+  opacity: 0.8;
+}
+
+.search-actions-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+
+.search-action-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 0.95rem;
+  transition: all 0.15s ease;
+}
+
+.search-clear-btn:hover {
+  background: rgba(128, 128, 128, 0.15);
+  color: var(--text-primary);
+}
+
+.search-star-btn {
+  font-size: 1.05rem;
+}
+
+.search-star-btn:hover {
+  color: #f59e0b;
+  transform: scale(1.1);
+}
+
+.search-star-btn.active {
+  color: #f59e0b;
+}
+
+.search-shortcut-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--surface-border);
+  border-radius: 8px;
+  padding: 3px 9px;
+  font-size: 0.72rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.search-shortcut-pill:hover {
+  background: var(--brand-primary);
+  color: #ffffff;
+  border-color: var(--brand-primary);
+  box-shadow: 0 2px 8px rgba(0, 120, 212, 0.3);
+  transform: translateY(-1px);
+}
+
+.shortcut-pill-icon {
+  font-size: 0.8rem;
+  opacity: 0.85;
+}
+
+/* Modern Dropdown Popover */
+.search-dropdown-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  background-color: var(--surface-color);
+  border: 1px solid var(--surface-border);
+  border-radius: 12px;
+  box-shadow:
+    0 16px 36px rgba(0, 0, 0, 0.28),
+    0 0 0 1px rgba(255, 255, 255, 0.05);
+  z-index: 1000;
+  overflow: hidden;
+  backdrop-filter: blur(16px);
+  animation: popoverFadeIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes popoverFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.search-dropdown-header {
+  padding: 8px 14px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+  background-color: var(--bg-secondary);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--surface-border);
+}
+
+.search-clear-all-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.72rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+}
+
+.search-clear-all-btn:hover {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.search-recents-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.search-recent-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  cursor: pointer;
+  font-size: 0.86rem;
+  color: var(--text-primary);
+  transition: background-color 0.15s ease;
+}
+
+.search-recent-item:hover {
+  background-color: var(--result-hover-bg);
+}
+
+.recent-item-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-clock-icon {
+  color: var(--text-secondary);
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
+.recent-delete-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 1.1rem;
+  line-height: 1;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: all 0.15s ease;
+}
+
+.recent-delete-btn:hover {
+  opacity: 1;
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.search-quick-syntax-section {
+  border-top: 1px solid var(--surface-border);
+}
+
+.search-syntax-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px;
+  background: var(--surface-color);
+}
+
+.syntax-chip {
+  padding: 3px 9px;
+  border-radius: 14px;
+  border: 1px solid var(--surface-border);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 0.74rem;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.syntax-chip:hover {
+  background: var(--brand-primary);
+  color: #ffffff;
+  border-color: var(--brand-primary);
+  transform: translateY(-1px);
 }
 
 .toolbar-actions {
@@ -659,7 +901,10 @@
   border-radius: 16px;
   box-shadow: 0 20px 50px rgba(0, 0, 0, 0.2);
   padding: 32px;
-  width: 440px;
+  width: 520px;
+  max-width: 92vw;
+  max-height: 88vh;
+  overflow-y: auto;
   opacity: 1;
 }
 
@@ -739,6 +984,228 @@
 
 .close-settings-btn:hover {
   background: var(--result-hover-bg);
+}
+
+/* Modern Shortcut Recorder */
+.shortcut-recorder-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--surface-border);
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.shortcut-current-box {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.shortcut-current-left {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.shortcut-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+
+.shortcut-active-keycap-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.shortcut-keycap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface-color);
+  border: 1px solid var(--brand-primary);
+  box-shadow:
+    0 2px 6px rgba(0, 120, 212, 0.15),
+    0 1px 0 rgba(0, 0, 0, 0.1);
+  border-radius: 8px;
+  padding: 5px 12px;
+  font-size: 0.95rem;
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: var(--brand-primary);
+  width: fit-content;
+}
+
+.shortcut-keycap .keycap-icon {
+  font-size: 0.88rem;
+  opacity: 0.85;
+}
+
+.shortcut-hint {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.shortcut-record-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 0.84rem;
+  font-weight: 600;
+  background: var(--surface-color);
+  border: 1px solid var(--surface-border);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.shortcut-record-btn:hover {
+  background: var(--result-hover-bg);
+  border-color: var(--brand-primary);
+  color: var(--brand-primary);
+}
+
+.shortcut-record-btn.recording {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: #ef4444;
+  color: #ef4444;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.2);
+  animation: pulseRecording 1.5s infinite;
+}
+
+@keyframes pulseRecording {
+  0% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(239, 68, 68, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+  }
+}
+
+.recording-pulse-wrapper {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.recording-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ef4444;
+  animation: blinkDot 1s infinite alternate;
+}
+
+@keyframes blinkDot {
+  from {
+    opacity: 0.3;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.shortcut-recording-overlay {
+  background: var(--surface-color);
+  border: 1px dashed var(--brand-primary);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+
+.recording-instruction {
+  font-size: 0.8rem;
+  color: var(--text-primary);
+  text-align: center;
+}
+
+.shortcut-status-error {
+  font-size: 0.78rem;
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.shortcut-status-success {
+  font-size: 0.78rem;
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.1);
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(16, 185, 129, 0.2);
+}
+
+.shortcut-status-info {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.shortcut-presets-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.presets-title {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.shortcut-presets-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.shortcut-preset-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  font-size: 0.78rem;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-weight: 500;
+  background: var(--surface-color);
+  border: 1px solid var(--surface-border);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.shortcut-preset-pill:hover {
+  background: var(--result-hover-bg);
+  border-color: var(--brand-primary);
+}
+
+.shortcut-preset-pill.selected {
+  background: var(--brand-primary);
+  color: #ffffff;
+  border-color: var(--brand-primary);
+  box-shadow: 0 2px 8px rgba(0, 120, 212, 0.25);
+}
+
+.preset-badge {
+  font-size: 0.65rem;
+  background: rgba(255, 255, 255, 0.25);
+  padding: 1px 4px;
+  border-radius: 4px;
 }
 /* Menu Dropdowns */
 .menu-item-container {
