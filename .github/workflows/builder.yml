@@ -7,6 +7,11 @@ on:
         type: boolean
         required: false
         default: false
+      version:
+        description: "Release version (leave blank to auto-increment, or specify e.g. 0.2.0)"
+        type: string
+        required: false
+        default: ""
       test_release:
         description: "Upload a test build (APKs + desktop installers) to a private prerelease on the private repo"
         type: boolean
@@ -49,6 +54,8 @@ env:
 jobs:
   quality-gates:
     runs-on: ubuntu-latest
+    outputs:
+      release_version: ${{ steps.calc_version.outputs.release_version }}
     env:
       VITE_LICENSE_SERVER: ${{ vars.VITE_LICENSE_SERVER }}
     steps:
@@ -78,6 +85,73 @@ jobs:
         with:
           node-version: 20
           cache: "npm"
+      - name: Calculate Release Version
+        id: calc_version
+        if: github.event.inputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          LATEST_TAG=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName 2>/dev/null || true)
+          TARGET_VERSION=$(node -e '
+            const fs = require("fs");
+            function parseSemver(v) {
+              const clean = (v || "").replace(/^v/, "").trim();
+              const parts = clean.split(".").map(p => parseInt(p, 10));
+              while (parts.length < 3) parts.push(0);
+              return { major: parts[0] || 0, minor: parts[1] || 0, patch: parts[2] || 0 };
+            }
+            function compareSemver(a, b) {
+              const sa = parseSemver(a);
+              const sb = parseSemver(b);
+              if (sa.major !== sb.major) return sa.major - sb.major;
+              if (sa.minor !== sb.minor) return sa.minor - sb.minor;
+              return sa.patch - sb.patch;
+            }
+            function incrementPatch(v) {
+              const s = parseSemver(v);
+              return s.major + "." + s.minor + "." + (s.patch + 1);
+            }
+            const inputVersion = process.env.INPUT_VERSION || "";
+            const latestTag = process.argv[1] || "";
+            const repoVersion = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8")).version || "0.1.0";
+            if (inputVersion.trim()) {
+              console.log(inputVersion.trim().replace(/^v/, ""));
+            } else if (!latestTag.trim()) {
+              console.log(repoVersion.trim().replace(/^v/, ""));
+            } else {
+              const latestClean = latestTag.trim().replace(/^v/, "");
+              const repoClean = repoVersion.trim().replace(/^v/, "");
+              if (compareSemver(repoClean, latestClean) > 0) {
+                console.log(repoClean);
+              } else {
+                const base = compareSemver(repoClean, latestClean) >= 0 ? repoClean : latestClean;
+                console.log(incrementPatch(base));
+              }
+            }
+          ' "$LATEST_TAG")
+          echo "Calculated release version: $TARGET_VERSION"
+          echo "release_version=$TARGET_VERSION" >> "$GITHUB_OUTPUT"
+          node -e '
+            const fs = require("fs");
+            const v = process.argv[1];
+            if (!v) process.exit(0);
+            if (fs.existsSync("package.json")) {
+              const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+              pkg.version = v;
+              fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+            }
+            if (fs.existsSync("src-tauri/tauri.conf.json")) {
+              const tauri = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8"));
+              tauri.version = v;
+              fs.writeFileSync("src-tauri/tauri.conf.json", JSON.stringify(tauri, null, 2) + "\n");
+            }
+            if (fs.existsSync("src-tauri/Cargo.toml")) {
+              let cargo = fs.readFileSync("src-tauri/Cargo.toml", "utf8");
+              cargo = cargo.replace(/^version = "[^"]+"/m, "version = \"" + v + "\"");
+              fs.writeFileSync("src-tauri/Cargo.toml", cargo);
+            }
+          ' "$TARGET_VERSION"
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
@@ -155,6 +229,32 @@ jobs:
         with:
           node-version: 20
           cache: "npm"
+      - name: Apply Release Version
+        if: github.event.inputs.release == 'true'
+        shell: bash
+        run: |
+          VERSION="${{ needs.quality-gates.outputs.release_version }}"
+          echo "Applying release version: $VERSION"
+          node -e '
+            const fs = require("fs");
+            const v = process.argv[1];
+            if (!v) process.exit(0);
+            if (fs.existsSync("package.json")) {
+              const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+              pkg.version = v;
+              fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+            }
+            if (fs.existsSync("src-tauri/tauri.conf.json")) {
+              const tauri = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8"));
+              tauri.version = v;
+              fs.writeFileSync("src-tauri/tauri.conf.json", JSON.stringify(tauri, null, 2) + "\n");
+            }
+            if (fs.existsSync("src-tauri/Cargo.toml")) {
+              let cargo = fs.readFileSync("src-tauri/Cargo.toml", "utf8");
+              cargo = cargo.replace(/^version = "[^"]+"/m, "version = \"" + v + "\"");
+              fs.writeFileSync("src-tauri/Cargo.toml", cargo);
+            }
+          ' "$VERSION"
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
@@ -266,6 +366,32 @@ jobs:
         with:
           node-version: 20
           cache: "npm"
+      - name: Apply Release Version
+        if: github.event.inputs.release == 'true'
+        shell: bash
+        run: |
+          VERSION="${{ needs.quality-gates.outputs.release_version }}"
+          echo "Applying release version: $VERSION"
+          node -e '
+            const fs = require("fs");
+            const v = process.argv[1];
+            if (!v) process.exit(0);
+            if (fs.existsSync("package.json")) {
+              const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+              pkg.version = v;
+              fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+            }
+            if (fs.existsSync("src-tauri/tauri.conf.json")) {
+              const tauri = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8"));
+              tauri.version = v;
+              fs.writeFileSync("src-tauri/tauri.conf.json", JSON.stringify(tauri, null, 2) + "\n");
+            }
+            if (fs.existsSync("src-tauri/Cargo.toml")) {
+              let cargo = fs.readFileSync("src-tauri/Cargo.toml", "utf8");
+              cargo = cargo.replace(/^version = "[^"]+"/m, "version = \"" + v + "\"");
+              fs.writeFileSync("src-tauri/Cargo.toml", cargo);
+            }
+          ' "$VERSION"
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
@@ -371,6 +497,32 @@ jobs:
         with:
           node-version: 20
           cache: "npm"
+      - name: Apply Release Version
+        if: github.event.inputs.release == 'true'
+        shell: bash
+        run: |
+          VERSION="${{ needs.quality-gates.outputs.release_version }}"
+          echo "Applying release version: $VERSION"
+          node -e '
+            const fs = require("fs");
+            const v = process.argv[1];
+            if (!v) process.exit(0);
+            if (fs.existsSync("package.json")) {
+              const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+              pkg.version = v;
+              fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+            }
+            if (fs.existsSync("src-tauri/tauri.conf.json")) {
+              const tauri = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8"));
+              tauri.version = v;
+              fs.writeFileSync("src-tauri/tauri.conf.json", JSON.stringify(tauri, null, 2) + "\n");
+            }
+            if (fs.existsSync("src-tauri/Cargo.toml")) {
+              let cargo = fs.readFileSync("src-tauri/Cargo.toml", "utf8");
+              cargo = cargo.replace(/^version = "[^"]+"/m, "version = \"" + v + "\"");
+              fs.writeFileSync("src-tauri/Cargo.toml", cargo);
+            }
+          ' "$VERSION"
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
@@ -456,7 +608,7 @@ jobs:
     # "latest" tag/release so versioned releases become the single source of
     # truth. Older versioned releases keep their tags and stay downloadable.
     if: github.event.inputs.release == 'true'
-    needs: [build-and-release, build-android]
+    needs: [quality-gates, build-and-release, build-android]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -472,8 +624,41 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
-      - name: Determine Release Tag
-        run: echo "RELEASE_TAG=$(node -p "require('./src-tauri/tauri.conf.json').version")" >> "$GITHUB_ENV"
+      - name: Apply Release Version
+        run: |
+          VERSION="${{ needs.quality-gates.outputs.release_version }}"
+          echo "RELEASE_TAG=$VERSION" >> "$GITHUB_ENV"
+          node -e '
+            const fs = require("fs");
+            const v = process.argv[1];
+            if (!v) process.exit(0);
+            if (fs.existsSync("package.json")) {
+              const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+              pkg.version = v;
+              fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+            }
+            if (fs.existsSync("src-tauri/tauri.conf.json")) {
+              const tauri = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8"));
+              tauri.version = v;
+              fs.writeFileSync("src-tauri/tauri.conf.json", JSON.stringify(tauri, null, 2) + "\n");
+            }
+            if (fs.existsSync("src-tauri/Cargo.toml")) {
+              let cargo = fs.readFileSync("src-tauri/Cargo.toml", "utf8");
+              cargo = cargo.replace(/^version = "[^"]+"/m, "version = \"" + v + "\"");
+              fs.writeFileSync("src-tauri/Cargo.toml", cargo);
+            }
+          ' "$VERSION"
+      - name: Commit and Push Version Bump to Private Master
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout master || git checkout -b master origin/master
+          if ! git diff --quiet package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml; then
+            git commit -am "chore(release): bump version to $RELEASE_TAG [skip ci]"
+            git push origin master
+          else
+            echo "Working tree clean, no version bump commit needed."
+          fi
       - name: Mark New Release as Latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
