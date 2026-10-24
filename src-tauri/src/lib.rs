@@ -786,10 +786,7 @@ async fn search_files(
         "AND m.category = ?3"
     };
 
-    let sort_desc = match sort_order.as_deref() {
-        Some("asc") | Some("ASC") => false,
-        _ => true,
-    };
+    let sort_desc = !matches!(sort_order.as_deref(), Some("asc") | Some("ASC"));
 
     let order_sql = match sort_by.as_deref() {
         Some("modified") | Some("date") => {
@@ -882,10 +879,8 @@ async fn search_files(
             })
             .map_err(|e| e.to_string())?;
 
-        for res in results {
-            if let Ok(r) = res {
-                final_results.push(r);
-            }
+        for r in results.flatten() {
+            final_results.push(r);
         }
         return Ok(final_results);
     }
@@ -1393,7 +1388,7 @@ async fn find_duplicates(app_handle: AppHandle) -> Result<Vec<DuplicateGroup>, S
         }
     }
 
-    duplicate_groups.sort_by(|a, b| b.wasted_bytes.cmp(&a.wasted_bytes));
+    duplicate_groups.sort_by_key(|a| std::cmp::Reverse(a.wasted_bytes));
 
     Ok(duplicate_groups)
 }
