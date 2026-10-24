@@ -250,7 +250,7 @@ export const SettingsTab = ({
         </div>
 
         <div className="mob-settings-group">
-          <div className="mob-settings-label">Vexil Search · v0.1.0</div>
+          <div className="mob-settings-label">Vexil Search · v0.2.0</div>
           <div className="mob-settings-links">
             <a
               href="#"

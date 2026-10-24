@@ -477,7 +477,12 @@ jobs:
       - name: Mark New Release as Latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --latest
+        run: |
+          if [ -f "RELEASE_NOTES.md" ]; then
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --latest --notes-file RELEASE_NOTES.md
+          else
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --latest
+          fi
       - name: Remove Legacy 'latest' Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
