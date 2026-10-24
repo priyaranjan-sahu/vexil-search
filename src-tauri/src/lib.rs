@@ -9,11 +9,14 @@ mod security;
 #[path = "../build_key.rs"]
 mod build_key;
 
+#[cfg(desktop)]
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use rusqlite::params;
 use serde::Serialize;
 use std::path::PathBuf;
-use std::sync::mpsc::{channel, sync_channel};
+#[cfg(desktop)]
+use std::sync::mpsc::channel;
+use std::sync::mpsc::sync_channel;
 use std::sync::Mutex;
 use std::thread;
 #[cfg(desktop)]
@@ -2110,6 +2113,7 @@ async fn open_in_explorer(app_handle: AppHandle, path: String) -> Result<String,
 /// FileProvider/`ACTION_VIEW` plumbing, so this command only has to serve
 /// desktop and iOS; `openResult` in the frontend prefers the bridge when it is
 /// present.
+#[cfg(any(desktop, test))]
 fn is_dangerous_executable(path: &std::path::Path) -> bool {
     let ext = path
         .extension()
@@ -2148,6 +2152,8 @@ async fn open_file_external(
         opener::reveal(&valid_path).map_err(|e| e.to_string())?;
         return Ok("Revealed executable safely in file explorer".to_string());
     }
+    #[cfg(not(desktop))]
+    let _ = allow_execute;
     open_with_default_app(&app, &valid_path)
 }
 
