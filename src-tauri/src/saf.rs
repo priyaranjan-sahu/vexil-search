@@ -43,6 +43,12 @@ struct Child {
     last_modified: i64,
 }
 
+fn clear_pending_exception(env: &mut JNIEnv) {
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
+}
+
 /// Loads `com.vexil.app.SafBridge` and returns a JNI environment plus the
 /// class, both valid for as long as `vm` is borrowed.
 ///
@@ -53,23 +59,50 @@ fn load_bridge(vm: &JavaVM) -> Result<(JNIEnv<'_>, JClass<'_>), String> {
         .attach_current_thread_as_daemon()
         .map_err(|e| e.to_string())?;
 
-    let context = unsafe { JObject::from_raw(ndk_context::android_context().context().cast()) };
-    let loader = env
-        .call_method(&context, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])
-        .and_then(|v| v.l())
-        .map_err(|e| e.to_string())?;
-    let name = env
-        .new_string("com.vexil.app.SafBridge")
-        .map_err(|e| e.to_string())?;
-    let class = env
-        .call_method(
-            &loader,
-            "loadClass",
-            "(Ljava/lang/String;)Ljava/lang/Class;",
-            &[JValue::Object(&name)],
-        )
-        .and_then(|v| v.l())
-        .map_err(|e| e.to_string())?;
+    let context_ptr = ndk_context::android_context().context();
+    if context_ptr.is_null() {
+        return Err("ndk-context Android context pointer is null".to_string());
+    }
+    let context = unsafe { JObject::from_raw(context_ptr.cast()) };
+    let loader = match env.call_method(&context, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])
+    {
+        Ok(v) => match v.l() {
+            Ok(l) => l,
+            Err(e) => {
+                clear_pending_exception(&mut env);
+                return Err(e.to_string());
+            }
+        },
+        Err(e) => {
+            clear_pending_exception(&mut env);
+            return Err(e.to_string());
+        }
+    };
+    let name = match env.new_string("com.vexil.app.SafBridge") {
+        Ok(n) => n,
+        Err(e) => {
+            clear_pending_exception(&mut env);
+            return Err(e.to_string());
+        }
+    };
+    let class = match env.call_method(
+        &loader,
+        "loadClass",
+        "(Ljava/lang/String;)Ljava/lang/Class;",
+        &[JValue::Object(&name)],
+    ) {
+        Ok(v) => match v.l() {
+            Ok(c) => c,
+            Err(e) => {
+                clear_pending_exception(&mut env);
+                return Err(e.to_string());
+            }
+        },
+        Err(e) => {
+            clear_pending_exception(&mut env);
+            return Err(e.to_string());
+        }
+    };
 
     Ok((env, JClass::from(class)))
 }
@@ -79,6 +112,9 @@ fn load_bridge(vm: &JavaVM) -> Result<(JNIEnv<'_>, JClass<'_>), String> {
 /// only happens after the app is running.
 fn current_vm() -> Result<JavaVM, String> {
     let raw = ndk_context::android_context().vm();
+    if raw.is_null() {
+        return Err("ndk-context JavaVM pointer is null".to_string());
+    }
     unsafe { JavaVM::from_raw(raw.cast()) }.map_err(|e| e.to_string())
 }
 
@@ -89,9 +125,11 @@ pub fn has_all_files_access() -> bool {
     let result = (|| -> Result<bool, String> {
         let vm = current_vm()?;
         let (mut env, class) = load_bridge(&vm)?;
-        env.call_static_method(&class, "hasAllFilesAccess", "()Z", &[])
-            .and_then(|v| v.z())
-            .map_err(|e| e.to_string())
+        let res = env
+            .call_static_method(&class, "hasAllFilesAccess", "()Z", &[])
+            .and_then(|v| v.z());
+        clear_pending_exception(&mut env);
+        res.map_err(|e| e.to_string())
     })();
     result.unwrap_or(false)
 }
@@ -101,15 +139,23 @@ pub fn tree_is_readable(tree_uri: &str) -> bool {
     let result = (|| -> Result<bool, String> {
         let vm = current_vm()?;
         let (mut env, class) = load_bridge(&vm)?;
-        let uri = env.new_string(tree_uri).map_err(|e| e.to_string())?;
-        env.call_static_method(
-            &class,
-            "treeIsReadable",
-            "(Ljava/lang/String;)Z",
-            &[JValue::Object(&uri)],
-        )
-        .and_then(|v| v.z())
-        .map_err(|e| e.to_string())
+        let uri = match env.new_string(tree_uri) {
+            Ok(u) => u,
+            Err(e) => {
+                clear_pending_exception(&mut env);
+                return Err(e.to_string());
+            }
+        };
+        let res = env
+            .call_static_method(
+                &class,
+                "treeIsReadable",
+                "(Ljava/lang/String;)Z",
+                &[JValue::Object(&uri)],
+            )
+            .and_then(|v| v.z());
+        clear_pending_exception(&mut env);
+        res.map_err(|e| e.to_string())
     })();
     result.unwrap_or(false)
 }
@@ -182,22 +228,46 @@ fn list_children(
     tree_uri: &str,
     document_uri: &str,
 ) -> Result<Vec<Child>, String> {
-    let tree = env.new_string(tree_uri).map_err(|e| e.to_string())?;
-    let doc = env.new_string(document_uri).map_err(|e| e.to_string())?;
-    let json = env
-        .call_static_method(
-            class,
-            "listChildren",
-            "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
-            &[JValue::Object(&tree), JValue::Object(&doc)],
-        )
-        .and_then(|v| v.l())
-        .map_err(|e| e.to_string())?;
+    let tree = match env.new_string(tree_uri) {
+        Ok(t) => t,
+        Err(e) => {
+            clear_pending_exception(env);
+            return Err(e.to_string());
+        }
+    };
+    let doc = match env.new_string(document_uri) {
+        Ok(d) => d,
+        Err(e) => {
+            clear_pending_exception(env);
+            return Err(e.to_string());
+        }
+    };
+    let json = match env.call_static_method(
+        class,
+        "listChildren",
+        "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+        &[JValue::Object(&tree), JValue::Object(&doc)],
+    ) {
+        Ok(v) => match v.l() {
+            Ok(l) => l,
+            Err(e) => {
+                clear_pending_exception(env);
+                return Err(e.to_string());
+            }
+        },
+        Err(e) => {
+            clear_pending_exception(env);
+            return Err(e.to_string());
+        }
+    };
 
-    let json: String = env
-        .get_string(&JString::from(json))
-        .map_err(|e| e.to_string())?
-        .into();
+    let json: String = match env.get_string(&JString::from(json)) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            clear_pending_exception(env);
+            return Err(e.to_string());
+        }
+    };
     serde_json::from_str(&json).map_err(|e| format!("SafBridge.listChildren: {e}"))
 }
 
@@ -208,21 +278,40 @@ fn read_bytes(
     document_uri: &str,
     max_bytes: i64,
 ) -> Result<Option<Vec<u8>>, String> {
-    let uri = env.new_string(document_uri).map_err(|e| e.to_string())?;
-    let array = env
-        .call_static_method(
-            class,
-            "readBytes",
-            "(Ljava/lang/String;J)[B",
-            &[JValue::Object(&uri), JValue::Long(max_bytes)],
-        )
-        .and_then(|v| v.l())
-        .map_err(|e| e.to_string())?;
+    let uri = match env.new_string(document_uri) {
+        Ok(u) => u,
+        Err(e) => {
+            clear_pending_exception(env);
+            return Err(e.to_string());
+        }
+    };
+    let array = match env.call_static_method(
+        class,
+        "readBytes",
+        "(Ljava/lang/String;J)[B",
+        &[JValue::Object(&uri), JValue::Long(max_bytes)],
+    ) {
+        Ok(v) => match v.l() {
+            Ok(l) => l,
+            Err(e) => {
+                clear_pending_exception(env);
+                return Err(e.to_string());
+            }
+        },
+        Err(e) => {
+            clear_pending_exception(env);
+            return Err(e.to_string());
+        }
+    };
 
     if array.is_null() {
         return Ok(None);
     }
-    env.convert_byte_array(JByteArray::from(array))
-        .map(Some)
-        .map_err(|e| e.to_string())
+    match env.convert_byte_array(JByteArray::from(array)) {
+        Ok(b) => Ok(Some(b)),
+        Err(e) => {
+            clear_pending_exception(env);
+            Err(e.to_string())
+        }
+    }
 }

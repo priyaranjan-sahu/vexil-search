@@ -102,7 +102,8 @@ class MainActivity : TauriActivity() {
   }
 
   // Bridge exposed to the WebView as `window.VexilAndroid`.
-  private inner class VexilBridge {
+  @androidx.annotation.Keep
+  inner class VexilBridge {
     @JavascriptInterface
     fun hasAllFilesAccess(): Boolean = this@MainActivity.hasAllFilesAccess()
 
@@ -329,6 +330,7 @@ class MainActivity : TauriActivity() {
  * throws: a failure is reported as an empty list / null so one unreadable folder
  * cannot abort the scan.
  */
+@androidx.annotation.Keep
 object SafBridge {
   @Volatile
   var appContext: Context? = null

@@ -2338,175 +2338,178 @@ pub fn run() {
                 run_in_background: Mutex::new(false),
             });
 
-            // Live Radar: Live File System Watcher
-            let app_handle = app.handle().clone();
-            let db_path_clone = db_path(&app_dir);
+            #[cfg(desktop)]
+            {
+                // Live Radar: Live File System Watcher
+                let app_handle = app.handle().clone();
+                let db_path_clone = db_path(&app_dir);
 
-            thread::spawn(move || {
-                let (tx, rx) = channel();
-                let mut watcher = match notify::recommended_watcher(tx) {
-                    Ok(w) => w,
-                    Err(_) => return,
-                };
-
-                let mut roots_to_watch: Vec<PathBuf> = Vec::new();
-                if let Some(dl_dir) = dirs::download_dir() {
-                    roots_to_watch.push(dl_dir);
-                }
-                if let Some(doc_dir) = dirs::document_dir() {
-                    if !roots_to_watch.contains(&doc_dir) {
-                        roots_to_watch.push(doc_dir);
-                    }
-                }
-                if let Some(desk_dir) = dirs::desktop_dir() {
-                    if !roots_to_watch.contains(&desk_dir) {
-                        roots_to_watch.push(desk_dir);
-                    }
-                }
-                if let Some(pic_dir) = dirs::picture_dir() {
-                    if !roots_to_watch.contains(&pic_dir) {
-                        roots_to_watch.push(pic_dir);
-                    }
-                }
-                if let Some(vid_dir) = dirs::video_dir() {
-                    if !roots_to_watch.contains(&vid_dir) {
-                        roots_to_watch.push(vid_dir);
-                    }
-                }
-                if let Some(music_dir) = dirs::audio_dir() {
-                    if !roots_to_watch.contains(&music_dir) {
-                        roots_to_watch.push(music_dir);
-                    }
-                }
-                for r in mobile::raw_scan_roots(&app_handle) {
-                    if !roots_to_watch.contains(&r) && r.is_dir() {
-                        roots_to_watch.push(r);
-                    }
-                }
-                for root in &roots_to_watch {
-                    let _ = watcher.watch(root, RecursiveMode::Recursive);
-                }
-
-                let mut pending_paths = std::collections::HashSet::new();
-                let mut pending_removes = std::collections::HashSet::new();
-                loop {
-                    let res = if pending_paths.is_empty() && pending_removes.is_empty() {
-                        rx.recv().ok()
-                    } else {
-                        rx.recv_timeout(std::time::Duration::from_millis(500)).ok()
+                thread::spawn(move || {
+                    let (tx, rx) = channel();
+                    let mut watcher = match notify::recommended_watcher(tx) {
+                        Ok(w) => w,
+                        Err(_) => return,
                     };
 
-                    match res {
-                        Some(Ok(Event { kind: EventKind::Create(_) | EventKind::Modify(_), paths, .. })) => {
-                            for path in paths {
-                                pending_paths.insert(path);
-                            }
-                            // Don't process immediately, wait for timeout to coalesce
-                            continue;
-                        }
-                        Some(Ok(Event { kind: EventKind::Remove(_), paths, .. })) => {
-                            for path in paths {
-                                pending_removes.insert(path);
-                            }
-                            // Don't process immediately, wait for timeout to coalesce
-                            continue;
-                        }
-                        Some(_) => continue, // Ignore other events
-                        None => {
-                            if pending_paths.is_empty() && pending_removes.is_empty() {
-                                // Channel disconnected and nothing pending
-                                break;
-                            }
+                    let mut roots_to_watch: Vec<PathBuf> = Vec::new();
+                    if let Some(dl_dir) = dirs::download_dir() {
+                        roots_to_watch.push(dl_dir);
+                    }
+                    if let Some(doc_dir) = dirs::document_dir() {
+                        if !roots_to_watch.contains(&doc_dir) {
+                            roots_to_watch.push(doc_dir);
                         }
                     }
+                    if let Some(desk_dir) = dirs::desktop_dir() {
+                        if !roots_to_watch.contains(&desk_dir) {
+                            roots_to_watch.push(desk_dir);
+                        }
+                    }
+                    if let Some(pic_dir) = dirs::picture_dir() {
+                        if !roots_to_watch.contains(&pic_dir) {
+                            roots_to_watch.push(pic_dir);
+                        }
+                    }
+                    if let Some(vid_dir) = dirs::video_dir() {
+                        if !roots_to_watch.contains(&vid_dir) {
+                            roots_to_watch.push(vid_dir);
+                        }
+                    }
+                    if let Some(music_dir) = dirs::audio_dir() {
+                        if !roots_to_watch.contains(&music_dir) {
+                            roots_to_watch.push(music_dir);
+                        }
+                    }
+                    for r in mobile::raw_scan_roots(&app_handle) {
+                        if !roots_to_watch.contains(&r) && r.is_dir() {
+                            roots_to_watch.push(r);
+                        }
+                    }
+                    for root in &roots_to_watch {
+                        let _ = watcher.watch(root, RecursiveMode::Recursive);
+                    }
 
-                    // Timeout reached or channel disconnected with pending paths
-                    if !pending_paths.is_empty() || !pending_removes.is_empty() {
-                        if let Ok(conn) = open_db(&db_path_clone) {
-                            // Purge removed paths so they stop showing up in search
-                            for path in pending_removes.drain() {
-                                let path_str = path.to_string_lossy().to_string();
-                                let _ = conn.execute(
-                                    "DELETE FROM file_index WHERE path = ?1",
-                                    params![&path_str],
-                                );
-                                let _ = conn.execute(
-                                    "DELETE FROM file_metadata WHERE path = ?1",
-                                    params![&path_str],
-                                );
-                            }
-                            let mut processed_paths = Vec::new();
-                            for path in pending_paths.drain() {
-                                if !path.is_file() {
-                                    continue;
-                                }
-                                let is_junk = path.components().any(|c| {
-                                    if let std::path::Component::Normal(name) = c {
-                                        is_junk_dir(&name.to_string_lossy())
-                                    } else {
-                                        false
-                                    }
-                                });
-                                if is_junk {
-                                    continue;
-                                }
-                                let path_str = path.to_string_lossy().to_string();
-                                let title_str = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-                                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                                let category = get_category(false, ext);
-
-                                let metadata = std::fs::metadata(&path).ok();
-                                let mtime = metadata
-                                    .as_ref()
-                                    .and_then(|m| m.modified().ok())
-                                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                                    .map(|d| d.as_secs() as i64)
-                                    .unwrap_or(0);
-                                let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
-
-                                let mut text_content = String::new();
-                                // Same rule as the scanner: a cloud placeholder's
-                                // body must not be read (it would hydrate the
-                                // real file over the network during a live watch).
-                                let placeholder = metadata
-                                    .as_ref()
-                                    .map(is_cloud_placeholder)
-                                    .unwrap_or(false);
-                                if content::should_index_content(ext) && !placeholder {
-                                    text_content = content::extract_text(&path, ext);
-                                }
-                                let content_str = format!("{} {} {}", title_str, path_str, text_content);
-
-                                let _ = conn.execute("DELETE FROM file_index WHERE path = ?1", params![&path_str]);
-                                let _ = conn.execute("INSERT INTO file_index (title, path, content) VALUES (?1, ?2, ?3)", params![&title_str, &path_str, &content_str]);
-
-                                // Upsert metadata with the file's category. Stamp
-                                // the change with the current time so the stale
-                                // GC (which only removes stamps older than a
-                                // scan's start) keeps this row, including for a
-                                // file created or edited while a scan is running.
-                                let live_sync_id = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|d| d.as_secs() as i64)
-                                    .unwrap_or(mtime);
-                                let _ = conn.execute(
-                                    "INSERT INTO file_metadata (path, mtime, size, sync_id, category) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(path) DO UPDATE SET mtime = excluded.mtime, size = excluded.size, category = excluded.category, sync_id = excluded.sync_id",
-                                    params![&path_str, mtime, size as i64, live_sync_id, &category],
-                                );
-
-                                processed_paths.push(path_str);
-                            }
-                            if !processed_paths.is_empty() {
-                                // Emit once per batch
-                                let _ = app_handle.emit("live-radar-batch", processed_paths);
-                            }
+                    let mut pending_paths = std::collections::HashSet::new();
+                    let mut pending_removes = std::collections::HashSet::new();
+                    loop {
+                        let res = if pending_paths.is_empty() && pending_removes.is_empty() {
+                            rx.recv().ok()
                         } else {
-                            // DB unavailable: keep pending paths and retry on the next cycle
-                            thread::sleep(std::time::Duration::from_millis(500));
+                            rx.recv_timeout(std::time::Duration::from_millis(500)).ok()
+                        };
+
+                        match res {
+                            Some(Ok(Event { kind: EventKind::Create(_) | EventKind::Modify(_), paths, .. })) => {
+                                for path in paths {
+                                    pending_paths.insert(path);
+                                }
+                                // Don't process immediately, wait for timeout to coalesce
+                                continue;
+                            }
+                            Some(Ok(Event { kind: EventKind::Remove(_), paths, .. })) => {
+                                for path in paths {
+                                    pending_removes.insert(path);
+                                }
+                                // Don't process immediately, wait for timeout to coalesce
+                                continue;
+                            }
+                            Some(_) => continue, // Ignore other events
+                            None => {
+                                if pending_paths.is_empty() && pending_removes.is_empty() {
+                                    // Channel disconnected and nothing pending
+                                    break;
+                                }
+                            }
+                        }
+
+                        // Timeout reached or channel disconnected with pending paths
+                        if !pending_paths.is_empty() || !pending_removes.is_empty() {
+                            if let Ok(conn) = open_db(&db_path_clone) {
+                                // Purge removed paths so they stop showing up in search
+                                for path in pending_removes.drain() {
+                                    let path_str = path.to_string_lossy().to_string();
+                                    let _ = conn.execute(
+                                        "DELETE FROM file_index WHERE path = ?1",
+                                        params![&path_str],
+                                    );
+                                    let _ = conn.execute(
+                                        "DELETE FROM file_metadata WHERE path = ?1",
+                                        params![&path_str],
+                                    );
+                                }
+                                let mut processed_paths = Vec::new();
+                                for path in pending_paths.drain() {
+                                    if !path.is_file() {
+                                        continue;
+                                    }
+                                    let is_junk = path.components().any(|c| {
+                                        if let std::path::Component::Normal(name) = c {
+                                            is_junk_dir(&name.to_string_lossy())
+                                        } else {
+                                            false
+                                        }
+                                    });
+                                    if is_junk {
+                                        continue;
+                                    }
+                                    let path_str = path.to_string_lossy().to_string();
+                                    let title_str = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                                    let category = get_category(false, ext);
+
+                                    let metadata = std::fs::metadata(&path).ok();
+                                    let mtime = metadata
+                                        .as_ref()
+                                        .and_then(|m| m.modified().ok())
+                                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                        .map(|d| d.as_secs() as i64)
+                                        .unwrap_or(0);
+                                    let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+
+                                    let mut text_content = String::new();
+                                    // Same rule as the scanner: a cloud placeholder's
+                                    // body must not be read (it would hydrate the
+                                    // real file over the network during a live watch).
+                                    let placeholder = metadata
+                                        .as_ref()
+                                        .map(is_cloud_placeholder)
+                                        .unwrap_or(false);
+                                    if content::should_index_content(ext) && !placeholder {
+                                        text_content = content::extract_text(&path, ext);
+                                    }
+                                    let content_str = format!("{} {} {}", title_str, path_str, text_content);
+
+                                    let _ = conn.execute("DELETE FROM file_index WHERE path = ?1", params![&path_str]);
+                                    let _ = conn.execute("INSERT INTO file_index (title, path, content) VALUES (?1, ?2, ?3)", params![&title_str, &path_str, &content_str]);
+
+                                    // Upsert metadata with the file's category. Stamp
+                                    // the change with the current time so the stale
+                                    // GC (which only removes stamps older than a
+                                    // scan's start) keeps this row, including for a
+                                    // file created or edited while a scan is running.
+                                    let live_sync_id = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| d.as_secs() as i64)
+                                        .unwrap_or(mtime);
+                                    let _ = conn.execute(
+                                        "INSERT INTO file_metadata (path, mtime, size, sync_id, category) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(path) DO UPDATE SET mtime = excluded.mtime, size = excluded.size, category = excluded.category, sync_id = excluded.sync_id",
+                                        params![&path_str, mtime, size as i64, live_sync_id, &category],
+                                    );
+
+                                    processed_paths.push(path_str);
+                                }
+                                if !processed_paths.is_empty() {
+                                    // Emit once per batch
+                                    let _ = app_handle.emit("live-radar-batch", processed_paths);
+                                }
+                            } else {
+                                // DB unavailable: keep pending paths and retry on the next cycle
+                                thread::sleep(std::time::Duration::from_millis(500));
+                            }
                         }
                     }
-                }
-            });
+                });
+            }
 
             Ok(())
         })

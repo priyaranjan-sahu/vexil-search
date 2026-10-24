@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 
+@androidx.annotation.Keep
 class VexilIndexingService : Service() {
   companion object {
     const val CHANNEL_ID = "vexil_indexing_channel"
@@ -34,7 +35,15 @@ class VexilIndexingService : Service() {
     super.onCreate()
     createNotificationChannel()
     val notification = buildNotification("Indexing files in background...")
-    startForeground(NOTIFICATION_ID, notification)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      startForeground(
+        NOTIFICATION_ID,
+        notification,
+        android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+      )
+    } else {
+      startForeground(NOTIFICATION_ID, notification)
+    }
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

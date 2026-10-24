@@ -1,21 +1,32 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# Preserve all Vexil application classes and members from obfuscation/shrinking
+-keep class com.vexil.app.** { *; }
+-keepclassmembers class com.vexil.app.** { *; }
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+# Keep JavaScript Interface methods and annotations for WebView
+-keepattributes JavascriptInterface
+-keepattributes *Annotation*
+-keepclassmembers class * {
+    @android.webkit.JavascriptInterface <methods>;
+}
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+# Preserve native methods and classes with native methods
+-keepclasseswithmembernames class * {
+    native <methods>;
+}
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# Explicitly preserve SafBridge and all its static methods for JNI
+-keep class com.vexil.app.SafBridge {
+    public static *;
+    *;
+}
+-keepclassmembers class com.vexil.app.SafBridge {
+    public static *;
+    *;
+}
+
+# Explicitly preserve VexilIndexingService
+-keep class com.vexil.app.VexilIndexingService { *; }
+-keepclassmembers class com.vexil.app.VexilIndexingService { *; }
+
+# Preserve line numbers for stack traces
+-keepattributes SourceFile,LineNumberTable
